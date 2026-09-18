@@ -1,4 +1,5 @@
 #![allow(non_camel_case_types)]
+#![allow(non_upper_case_globals)]
 
 use std::ffi::{c_int,c_uint,c_uchar};
 use std::fs::File;
@@ -118,6 +119,7 @@ fn insert_key(user_input: &mut User_Input, key: u8) {
     user_input.bytes[user_input.cursor] = key;
     user_input.size += 1;
     user_input.cursor += 1;
+    user_input.bytes[user_input.size] = b'\0';
 }
 
 fn cursor_forward(user_input: &mut User_Input) {
@@ -132,6 +134,68 @@ fn cursor_backward(user_input: &mut User_Input) {
     }
 }
 
+fn cursor_to_bol(user_input: &mut User_Input) {
+    user_input.cursor = 0;
+}
+
+fn cursor_to_eol(user_input: &mut User_Input) {
+    user_input.cursor = user_input.size;
+}
+
+fn word_forward(user_input: &mut User_Input) -> () {
+    // special chars to ignore: ' ', '"', '\''
+    let specs = [b' ', b'"', b'\''];
+    while user_input.cursor < user_input.size && specs.contains(&user_input.bytes[user_input.cursor]) {
+        user_input.cursor += 1;
+    }
+    while user_input.cursor < user_input.size && !specs.contains(&user_input.bytes[user_input.cursor]) {
+        user_input.cursor += 1;
+    }
+}
+
+fn word_backward(user_input: &mut User_Input) -> () {
+    // if cursor at end of string, force one backward
+    if user_input.cursor > 0 && user_input.cursor == user_input.size {
+        user_input.cursor -= 1;
+    }
+    
+    // special chars to ignore: ' ', '"', '\''
+    let specs = [b' ', b'"', b'\''];
+    while user_input.cursor > 0 && specs.contains(&user_input.bytes[user_input.cursor]) {
+        user_input.cursor -= 1;
+    }
+    while user_input.cursor > 0 && !specs.contains(&user_input.bytes[user_input.cursor]) {
+        user_input.cursor -= 1;
+    }
+}
+
+fn delete_word_backward(user_input: &mut User_Input) -> () {
+    // if cursor at end of string, force one backward
+    //if user_input.size > 0 && user_input.cursor == user_input.size {
+    //    user_input.cursor -= 1;
+    //}
+    
+    while user_input.size > 0 && user_input.bytes[user_input.cursor-1] == b' ' {
+        for i in user_input.cursor-1..user_input.size-1 {
+            user_input.bytes[i] = user_input.bytes[i+1];
+        }
+        user_input.cursor -= 1;
+        user_input.size -= 1;
+        user_input.bytes[user_input.size] = b'\0';
+    }
+
+    // specs stopping going further back
+    let specs = [b' ', b'"', b'\''];
+    while user_input.size > 0 && !specs.contains(&user_input.bytes[user_input.cursor-1]) {
+        for i in user_input.cursor-1..user_input.size-1 {
+            user_input.bytes[i] = user_input.bytes[i+1];
+        }
+        user_input.cursor -= 1;
+        user_input.size -= 1;
+        user_input.bytes[user_input.size] = b'\0';
+    }
+
+}
 
 fn print_user_input(input: &mut User_Input) -> () {
 
@@ -196,13 +260,13 @@ fn main() -> std::io::Result<()> {
         stdin.read_exact(&mut raw_key).unwrap();
         let key = raw_key[0];
 
-        previous_cmd_match_count = current_cmd_match_count;
-        current_cmd_match_count = 0;
-        
         // TODO: which key was pressed?
         match key {
             
-            CTRL_c => break, // Ctrl+c
+            CTRL_c => {
+                erase_current_output(current_cmd_match_count);
+                break;
+            }, // Ctrl+c
             
             ESC => {
                 escape_mode = true;
@@ -212,12 +276,21 @@ fn main() -> std::io::Result<()> {
             _ => {
                 //print!("key = <{}> ", key);
                 
+                previous_cmd_match_count = current_cmd_match_count;
+                current_cmd_match_count = 0;
+                        
                 if !escape_mode {
                     
                     if key == ENTER {
                         // TODO : grab focused cmd, insert in current shell, exit rush
                         print!("\n[!] select a cmd is not implemented yet\n");
                         break;
+                        
+                    } else if key == CTRL_a {
+                        cursor_to_bol(&mut user_input);
+                        
+                    } else if key == CTRL_e {
+                        cursor_to_eol(&mut user_input);
 
                     } else if key == CTRL_f {
                         cursor_forward(&mut user_input);
@@ -237,11 +310,11 @@ fn main() -> std::io::Result<()> {
                     escape_mode = false;
 
                     if key == b'b' {
-                        println!("alt+b");
+                        word_backward(&mut user_input);
                     } else if key == b'f' {
-                        println!("alt+f");
+                        word_forward(&mut user_input);
                     } else if key == BACKSPACE {
-                        println!("alt+backspace")
+                        delete_word_backward(&mut user_input);
                     }
                     
                 }
@@ -257,7 +330,7 @@ fn main() -> std::io::Result<()> {
                 
                 for cmd in cmds {
                     if cmd.contains(search_string) {
-                        print!("\n #match# {}", cmd);
+                        print!("\n \x1b[1;30m#match#\x1b[0m {}", cmd);
                         current_cmd_match_count += 1;
                         if current_cmd_match_count == MAX_ROWS.into() {
                             break
