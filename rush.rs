@@ -174,8 +174,9 @@ fn delete_word_backward(user_input: &mut User_Input) -> () {
     //if user_input.size > 0 && user_input.cursor == user_input.size {
     //    user_input.cursor -= 1;
     //}
+    let specs = [b' ', b'"', b'\''];
     
-    while user_input.size > 0 && user_input.bytes[user_input.cursor-1] == b' ' {
+    while user_input.size > 0 && user_input.cursor > 0 && specs.contains(&user_input.bytes[user_input.cursor-1])  {
         for i in user_input.cursor-1..user_input.size-1 {
             user_input.bytes[i] = user_input.bytes[i+1];
         }
@@ -185,8 +186,7 @@ fn delete_word_backward(user_input: &mut User_Input) -> () {
     }
 
     // specs stopping going further back
-    let specs = [b' ', b'"', b'\''];
-    while user_input.size > 0 && !specs.contains(&user_input.bytes[user_input.cursor-1]) {
+    while user_input.size > 0 && user_input.cursor > 0 && !specs.contains(&user_input.bytes[user_input.cursor-1]) {
         for i in user_input.cursor-1..user_input.size-1 {
             user_input.bytes[i] = user_input.bytes[i+1];
         }
@@ -311,8 +311,10 @@ fn main() -> std::io::Result<()> {
 
                     if key == b'b' {
                         word_backward(&mut user_input);
+                        
                     } else if key == b'f' {
                         word_forward(&mut user_input);
+                        
                     } else if key == BACKSPACE {
                         delete_word_backward(&mut user_input);
                     }
