@@ -32,16 +32,44 @@ unsafe extern "C" {
     //fn readline(prompt: *const c_uchar) -> *mut c_uchar;
 }
 
-struct User_Search {
+struct User_Input {
     bytes: [u8;512],
     size: usize,
+    cursor: usize, // cursor position
 }
 
-const STDIN     : c_int = 0;
-const TCSAFLUSH : c_int = 2;
+/* streams */
+const STDIN: c_int = 0;
 
-const ECHO   : tcflag_t = 0b1000;
-const ICANON : tcflag_t = 0b100;
+/* terminal attributes */
+const TCSAFLUSH: c_int = 2;
+
+/* terminal flags */
+const ECHO:   tcflag_t = 0b1000;
+const ICANON: tcflag_t = 0b100;
+
+/* key codes */
+const CTRL_c: u8 = 3;
+const ENTER: u8 = 10;
+const ESC: u8 = 27;
+const BACKSPACE: u8 = 127;
+
+/* user input cursor moves */
+const CTRL_a: u8 = 1; // beginning of line
+const CTRL_e: u8 = 5; // end of line
+const CTRL_b: u8 = 2; // backward cursor
+const CTRL_f: u8 = 6; // forward cursor
+
+/* settigns */
+const MAX_ROWS: u8 = 10; // display a maximum of 10 matching lines
+
+fn hide_cursor() -> () {
+    print!("\x1b[?25l");
+}
+
+fn show_cursor() -> () {
+    print!("\x1b[?25h");
+}
 
 fn save_terminal(terminal: &mut Termios) -> () {
     unsafe { tcgetattr(STDIN, terminal); }
@@ -49,28 +77,89 @@ fn save_terminal(terminal: &mut Termios) -> () {
 
 fn restore_terminal(terminal: &mut Termios) -> () {
     unsafe { tcsetattr(STDIN, TCSAFLUSH, terminal); }
+    show_cursor();
 }
-
-const CTRL_C: u8 = 3;
-const ENTER: u8 = 10;
-const ESC: u8 = 27;
-const BACKSPACE: u8 = 127;
 
 fn set_terminal_raw_mode(terminal: &mut Termios) -> () {
     terminal.c_lflag &= ICANON; // enable ICANON  raw mode
     terminal.c_lflag &= ! ECHO ; // disable ECHO mode
     unsafe { tcsetattr(STDIN, TCSAFLUSH, terminal); }
+    hide_cursor();
+}
+
+fn erase_current_output(rows: usize) -> () {
+    if rows != 0 {
+        print!("\x1B[{}K", rows); // erase matching cmd rows + user input
+        print!("\x1B[{}A\x1B[0J", rows); // move cursor up and clean up lines
+    }
+    print!("\x1B[{}G", 0); // cursor to bol
+    print!("\x1B[0K\r");
+}
+
+fn delete_backward(user_input: &mut User_Input) {
+    // NOTE: we need to null terminate '\0'
+    if user_input.cursor > 0 {
+        for i in user_input.cursor..user_input.size {
+            user_input.bytes[i-1] = user_input.bytes[i];
+        }
+        user_input.size -= 1;
+        user_input.cursor -= 1;
+        user_input.bytes[user_input.size] = b'\0';
+    }
+}
+
+fn insert_key(user_input: &mut User_Input, key: u8) {
+    if user_input.cursor != user_input.size {
+        // todo: assert no overflow
+        for i in (user_input.cursor..user_input.size).rev() {
+            user_input.bytes[i+1] = user_input.bytes[i];
+        }        
+    }
+    user_input.bytes[user_input.cursor] = key;
+    user_input.size += 1;
+    user_input.cursor += 1;
+}
+
+fn cursor_forward(user_input: &mut User_Input) {
+    if user_input.cursor < user_input.size {
+        user_input.cursor += 1;
+    }
+}
+
+fn cursor_backward(user_input: &mut User_Input) {
+    if user_input.cursor > 0 {
+        user_input.cursor -= 1;
+    }
+}
+
+
+fn print_user_input(input: &mut User_Input) -> () {
+
+    let cursor_color = 7; // white
+    
+    for i in 0..input.size {
+        if i == input.cursor {
+            print!("\x1B[{}m", cursor_color);
+        }
+        print!("{}",input.bytes[i] as char);
+        print!("\x1B[0m");
+    }
+    if input.cursor == input.size {
+        // emulate block cursor with space lol
+        print!("\x1B[{}m \x1B[0m", cursor_color);
+    }
+    
 }
 
 fn main() -> std::io::Result<()> {
-
+    
     
     let mut file: File = File::open(history_file_path)?;
     
     let mut history = String::new();
-    let size = file.read_to_string(&mut history);
+    let _size = file.read_to_string(&mut history);
 
-    println!("[x] Read history file \"{}\" (size = {:?})", history_file_path, size);
+    //println!("[x] Read history file \"{}\" (size = {:?})", history_file_path, size);
     
     let mut terminal_at_start: Termios = Default::default();
     
@@ -88,25 +177,32 @@ fn main() -> std::io::Result<()> {
     // this is useful because Alt+f or whatever is Esc+f so 2 bytes ()
     // check here for more shortcuts : https://github.com/mateolafalce/k_board/blob/main/src/keys.rs
     
-    let mut user_search = User_Search {
+    let mut user_input = User_Input {
         bytes: [0;512],
         size: 0,
+        cursor: 0,
     };
 
     // read user input in loop
     let mut stdin = io::stdin().lock();
 
     let mut escape_mode: bool = false;
+
+    let mut current_cmd_match_count  = 0;
+    let mut previous_cmd_match_count;
     
     //read byte by byte
     loop {
         stdin.read_exact(&mut raw_key).unwrap();
         let key = raw_key[0];
 
+        previous_cmd_match_count = current_cmd_match_count;
+        current_cmd_match_count = 0;
+        
         // TODO: which key was pressed?
         match key {
             
-            CTRL_C => break, // Ctrl+c
+            CTRL_c => break, // Ctrl+c
             
             ESC => {
                 escape_mode = true;
@@ -114,40 +210,65 @@ fn main() -> std::io::Result<()> {
             },
             
             _ => {
+                //print!("key = <{}> ", key);
+                
                 if !escape_mode {
+                    
                     if key == ENTER {
-                        let cmds = history.split("\n");
-                        let search_string = str::from_utf8(&user_search.bytes)
-                            .unwrap()
-                            .trim_end_matches('\0');
-                        
-                        for cmd in cmds {
-                            if cmd.contains(search_string) {
-                                print!("cmd => {}\n", cmd);
-                            }
-                        }
-                        user_search.bytes = [0;512];
-                        user_search.size = 0;
+                        // TODO : grab focused cmd, insert in current shell, exit rush
+                        print!("\n[!] select a cmd is not implemented yet\n");
+                        break;
 
+                    } else if key == CTRL_f {
+                        cursor_forward(&mut user_input);
+                        
+                    } else if key == CTRL_b {
+                        cursor_backward(&mut user_input);
+
+                    } else if key == BACKSPACE {
+                        delete_backward(&mut user_input);
+                        
                     } else {
-                        user_search.bytes[user_search.size] = key;
-                        user_search.size += 1;
-                        print!("search = {} ; stdin = {:?}\n", str::from_utf8(&user_search.bytes).unwrap().trim_end_matches('\0'), raw_key);
+                        insert_key(&mut user_input, key);
                     }
+                    
                 } else {
+                    
                     escape_mode = false;
+
                     if key == b'b' {
                         println!("alt+b");
                     } else if key == b'f' {
                         println!("alt+f");
                     } else if key == BACKSPACE {
-                        println!("alt+backspace");                        
+                        println!("alt+backspace")
+                    }
+                    
+                }
+
+                /* screen display */
+                erase_current_output(previous_cmd_match_count);
+                print_user_input(&mut user_input);
+
+                let cmds = history.split("\n");
+                let search_string = str::from_utf8(&user_input.bytes)
+                    .unwrap()
+                    .trim_end_matches('\0');
+                
+                for cmd in cmds {
+                    if cmd.contains(search_string) {
+                        print!("\n #match# {}", cmd);
+                        current_cmd_match_count += 1;
+                        if current_cmd_match_count == MAX_ROWS.into() {
+                            break
+                        }
                     }
                 }
+
             },
             
         }
-        //io::stdout().flush().unwrap();
+        io::stdout().flush().unwrap();
     }
 
     restore_terminal(&mut terminal_at_start);
