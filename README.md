@@ -1,12 +1,12 @@
 This is an experiment to reproduce fzf.
 I chose Rust to force myself programming in this syntax-noisy language.
 
-# Quick install
-
-Add this to your `~/.bashrc`:
+# Quick start
 
 ```console
-bind -x '"\C-r": ./rush'
+$ source ./ru.sh # then press <C-r>
+# or simply
+$ ./rush
 ```
 
 # SOURCES
