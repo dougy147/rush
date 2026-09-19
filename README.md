@@ -6,7 +6,7 @@ I chose Rust to force myself programming in this syntax-noisy language.
 Add this to your `~/.bashrc`:
 
 ```console
-bind -x '"\C-r": rush'
+bind -x '"\C-r": ./rush'
 ```
 
 # SOURCES

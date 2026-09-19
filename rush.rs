@@ -7,6 +7,8 @@ use std::io;
 use std::io::prelude::*;
 use std::env;
 
+use std::collections::HashMap;
+
 //use std::io::Write; // <--- bring flush() into scope
 
 type cc_t = c_uchar;
@@ -61,9 +63,11 @@ const CTRL_a: u8 = 1; // beginning of line
 const CTRL_e: u8 = 5; // end of line
 const CTRL_b: u8 = 2; // backward cursor
 const CTRL_f: u8 = 6; // forward cursor
+const CTRL_n: u8 = 14; // down row
+const CTRL_p: u8 = 16; // up row
 
 /* settigns */
-const MAX_ROWS: u8 = 10; // display a maximum of 10 matching lines
+const MAX_ROWS: usize = 10; // display a maximum of 10 matching lines
 
 fn hide_cursor() -> () {
     print!("\x1b[?25l");
@@ -216,6 +220,43 @@ fn print_user_input(input: &mut User_Input) -> () {
     
 }
 
+fn grab_matching_cmds<'a>(history_cmds: &mut HashMap<usize,&'a str>, history: &'a String, input: &mut [u8;512]) {
+    let cmds = history.split("\n");
+    let search_string = str::from_utf8(input)
+        .unwrap()
+        .trim_end_matches('\0');
+
+    history_cmds.clear();
+
+    let mut cmd_score = 0; // will be changed later
+    
+    for cmd in cmds {
+        if cmd.contains(search_string) {
+            // save all of them to store in a hashmap
+            history_cmds.insert(cmd_score, cmd);
+            cmd_score += 1;
+        }
+    }
+}
+
+fn display_cmds(history_cmds: &HashMap<usize,&str>, start_index: usize, highlight_cursor: usize) {
+    // start_index: which cmd index to start displaying cmds from
+    /* display cmds */
+    let mut cmd_match_count: usize = 0;
+    
+    for (i, (&_, &cmd)) in history_cmds.into_iter().enumerate() {
+        if i < start_index { continue }
+        if cmd_match_count < MAX_ROWS {
+            if i == highlight_cursor {
+                print!("\n \x1b[1;30m#match#\x1b[0m \x1b[0;37;43m{}\x1b[0m", cmd);
+            } else {
+                print!("\n \x1b[1;30m#match#\x1b[0m {}", cmd);
+            }
+            cmd_match_count += 1;
+        }
+    }
+}
+
 fn main() -> std::io::Result<()> {
     
     ***REMOVED***
@@ -258,8 +299,12 @@ fn main() -> std::io::Result<()> {
 
     let mut escape_mode: bool = false;
 
-    let mut current_cmd_match_count  = 0;
-    let mut previous_cmd_match_count;
+    let mut previous_cmd_match_count: usize;
+    let mut cmd_start_index: usize = 0;
+    let mut cmd_highlight_cursor: usize = 0;
+
+    // HashMap:  score => cmd
+    let mut history_cmds: HashMap<usize,&str> = HashMap::new();
     
     //read byte by byte
     loop {
@@ -270,7 +315,7 @@ fn main() -> std::io::Result<()> {
         match key {
             
             CTRL_c => {
-                //erase_current_output(current_cmd_match_count);
+                //erase_current_output(cmd_match_count);
                 break;
             }, // Ctrl+c
             
@@ -282,8 +327,7 @@ fn main() -> std::io::Result<()> {
             _ => {
                 //print!("key = <{}> ", key);
                 
-                previous_cmd_match_count = current_cmd_match_count;
-                current_cmd_match_count = 0;
+                previous_cmd_match_count = history_cmds.len();
                         
                 if !escape_mode {
                     
@@ -303,6 +347,26 @@ fn main() -> std::io::Result<()> {
                         
                     } else if key == CTRL_b {
                         cursor_backward(&mut user_input);
+                        
+                    } else if key == CTRL_n {
+                        cmd_highlight_cursor = (cmd_highlight_cursor + 1) % history_cmds.len();
+
+                        if cmd_start_index + MAX_ROWS <= cmd_highlight_cursor {
+                            cmd_start_index += 1;
+                        }
+
+                        if cmd_highlight_cursor < cmd_start_index {
+                            cmd_start_index = cmd_highlight_cursor;
+                        }
+                        
+                    } else if key == CTRL_p {
+                        cmd_highlight_cursor = ((cmd_highlight_cursor as isize - 1) + history_cmds.len() as isize) as usize % history_cmds.len();
+
+                        if cmd_highlight_cursor >= cmd_start_index + MAX_ROWS {
+                            cmd_start_index = ((history_cmds.len() as isize - MAX_ROWS as isize) as usize + history_cmds.len()) % history_cmds.len();
+                        } else if cmd_highlight_cursor < cmd_start_index {
+                            cmd_start_index = cmd_highlight_cursor;
+                        }
 
                     } else if key == BACKSPACE {
                         delete_backward(&mut user_input);
@@ -330,21 +394,8 @@ fn main() -> std::io::Result<()> {
                 /* screen display */
                 erase_current_output(previous_cmd_match_count);
                 print_user_input(&mut user_input);
-
-                let cmds = history.split("\n");
-                let search_string = str::from_utf8(&user_input.bytes)
-                    .unwrap()
-                    .trim_end_matches('\0');
-                
-                for cmd in cmds {
-                    if cmd.contains(search_string) {
-                        print!("\n \x1b[1;30m#match#\x1b[0m {}", cmd);
-                        current_cmd_match_count += 1;
-                        if current_cmd_match_count == MAX_ROWS.into() {
-                            break
-                        }
-                    }
-                }
+                grab_matching_cmds(&mut history_cmds, &history, &mut user_input.bytes);
+                display_cmds(&history_cmds, cmd_start_index, cmd_highlight_cursor);
 
             },
             
@@ -352,7 +403,7 @@ fn main() -> std::io::Result<()> {
         io::stdout().flush().unwrap();
     }
     
-    erase_current_output(current_cmd_match_count);
+    erase_current_output(history_cmds.len());
     restore_terminal(&mut terminal_at_start);
     Ok(())
 }
