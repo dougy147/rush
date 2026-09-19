@@ -226,7 +226,7 @@ fn print_user_input(input: &mut User_Input) -> () {
     
 }
 
-fn grab_matching_cmds<'a>(history_cmds: &mut HashMap<usize,&'a str>, history: &'a String, input: &mut [u8;512]) -> usize {
+fn grab_matching_cmds<'a>(history_cmds: &mut HashMap<&'a str,usize>, history: &'a String, input: &mut [u8;512]) -> usize {
     let cmds = history.split("\n");
     let search_string = str::from_utf8(input)
         .unwrap()
@@ -240,7 +240,7 @@ fn grab_matching_cmds<'a>(history_cmds: &mut HashMap<usize,&'a str>, history: &'
     for cmd in cmds {
         if cmd.contains(search_string) {
             // save all of them to store in a hashmap
-            history_cmds.insert(cmd_score, cmd);
+            history_cmds.insert(cmd, cmd_score);
             cmd_score += 1;
             if display_count < MAX_ROWS {
                 display_count += 1;
@@ -251,12 +251,12 @@ fn grab_matching_cmds<'a>(history_cmds: &mut HashMap<usize,&'a str>, history: &'
     return display_count;
 }
 
-fn display_cmds(history_cmds: &HashMap<usize,&str>, start_index: usize, highlight_cursor: usize) {
+fn display_cmds(history_cmds: &HashMap<&str,usize>, start_index: usize, highlight_cursor: usize) {
     // start_index: which cmd index to start displaying cmds from
     /* display cmds */
     let mut cmd_match_count: usize = 0;
     
-    for (i, (&_, &cmd)) in history_cmds.into_iter().enumerate() {
+    for (i, (&cmd, &_)) in history_cmds.into_iter().enumerate() {
         if i < start_index { continue }
         if cmd_match_count < MAX_ROWS {
             if i == highlight_cursor {
@@ -318,7 +318,7 @@ fn main() -> std::io::Result<()> {
     let mut cmd_highlight_cursor: usize = 0;
 
     // HashMap:  score => cmd
-    let mut history_cmds: HashMap<usize,&str> = HashMap::new();
+    let mut history_cmds: HashMap<&str,usize> = HashMap::new();
 
     /* immediately print user prompt */
     print_user_input(&mut user_input);
