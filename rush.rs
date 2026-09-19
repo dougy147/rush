@@ -5,6 +5,7 @@ use std::ffi::{c_int,c_uint,c_uchar};
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
+use std::env;
 
 //use std::io::Write; // <--- bring flush() into scope
 
@@ -217,6 +218,11 @@ fn print_user_input(input: &mut User_Input) -> () {
 
 fn main() -> std::io::Result<()> {
     
+    ***REMOVED***
+    let history_env_var = "HISTFILE";
+    let history_file_path: &str = &env::var(history_env_var)
+        .map_err(|error| print!("{error}: Could not find environment variable \"{}\"", history_env_var))
+        .unwrap();
     
     let mut file: File = File::open(history_file_path)?;
     
@@ -264,7 +270,7 @@ fn main() -> std::io::Result<()> {
         match key {
             
             CTRL_c => {
-                erase_current_output(current_cmd_match_count);
+                //erase_current_output(current_cmd_match_count);
                 break;
             }, // Ctrl+c
             
@@ -345,7 +351,8 @@ fn main() -> std::io::Result<()> {
         }
         io::stdout().flush().unwrap();
     }
-
+    
+    erase_current_output(current_cmd_match_count);
     restore_terminal(&mut terminal_at_start);
     Ok(())
 }
