@@ -55,6 +55,7 @@ const ICANON: tcflag_t = 0b100;
 /* key codes */
 const CTRL_c: u8 = 3;
 const ENTER: u8 = 10;
+const CARRIAGE: u8 = 13;
 const ESC: u8 = 27;
 const BACKSPACE: u8 = 127;
 
@@ -204,6 +205,11 @@ fn delete_word_backward(user_input: &mut User_Input) -> () {
 
 fn print_user_input(input: &mut User_Input) -> () {
 
+    /* print a prompt if you want */
+    let prompt_color = 3;
+    print!("\x1b[1;{}mrush> \x1b[0m", prompt_color);
+    ////////////////////////////////
+
     let cursor_color = 7; // white
     
     for i in 0..input.size {
@@ -220,7 +226,7 @@ fn print_user_input(input: &mut User_Input) -> () {
     
 }
 
-fn grab_matching_cmds<'a>(history_cmds: &mut HashMap<usize,&'a str>, history: &'a String, input: &mut [u8;512]) {
+fn grab_matching_cmds<'a>(history_cmds: &mut HashMap<usize,&'a str>, history: &'a String, input: &mut [u8;512]) -> usize {
     let cmds = history.split("\n");
     let search_string = str::from_utf8(input)
         .unwrap()
@@ -228,6 +234,7 @@ fn grab_matching_cmds<'a>(history_cmds: &mut HashMap<usize,&'a str>, history: &'
 
     history_cmds.clear();
 
+    let mut display_count = 0;
     let mut cmd_score = 0; // will be changed later
     
     for cmd in cmds {
@@ -235,8 +242,13 @@ fn grab_matching_cmds<'a>(history_cmds: &mut HashMap<usize,&'a str>, history: &'
             // save all of them to store in a hashmap
             history_cmds.insert(cmd_score, cmd);
             cmd_score += 1;
+            if display_count < MAX_ROWS {
+                display_count += 1;
+            }
         }
     }
+
+    return display_count;
 }
 
 fn display_cmds(history_cmds: &HashMap<usize,&str>, start_index: usize, highlight_cursor: usize) {
@@ -248,9 +260,9 @@ fn display_cmds(history_cmds: &HashMap<usize,&str>, start_index: usize, highligh
         if i < start_index { continue }
         if cmd_match_count < MAX_ROWS {
             if i == highlight_cursor {
-                print!("\n \x1b[1;30m#match#\x1b[0m \x1b[0;37;43m{}\x1b[0m", cmd);
+                print!("\n    \x1b[0;37;7m{}\x1b[0m", cmd);
             } else {
-                print!("\n \x1b[1;30m#match#\x1b[0m {}", cmd);
+                print!("\n    \x1b[0m{}", cmd);
             }
             cmd_match_count += 1;
         }
@@ -299,12 +311,19 @@ fn main() -> std::io::Result<()> {
 
     let mut escape_mode: bool = false;
 
-    let mut previous_cmd_match_count: usize;
+    let mut display_cmd_count: usize = 0;
+    let mut previously_displayed_cmd: usize = 0;
+    
     let mut cmd_start_index: usize = 0;
     let mut cmd_highlight_cursor: usize = 0;
 
     // HashMap:  score => cmd
     let mut history_cmds: HashMap<usize,&str> = HashMap::new();
+
+    /* immediately print user prompt */
+    print_user_input(&mut user_input);
+    // TODO: do we want to print cmds by default or only when user input?
+    io::stdout().flush().unwrap();
     
     //read byte by byte
     loop {
@@ -326,14 +345,16 @@ fn main() -> std::io::Result<()> {
             
             _ => {
                 //print!("key = <{}> ", key);
+                //io::stdout().flush().unwrap();
                 
-                previous_cmd_match_count = history_cmds.len();
+                previously_displayed_cmd = display_cmd_count;
                         
                 if !escape_mode {
                     
-                    if key == ENTER {
+                    if key == ENTER || key == CARRIAGE {
                         // TODO : grab focused cmd, insert in current shell, exit rush
-                        print!("\n[!] select a cmd is not implemented yet\n");
+                        //erase_current_output(previously_displayed_cmd);
+                        //print!("\n[!] select a cmd is not implemented yet\n");
                         break;
                         
                     } else if key == CTRL_a {
@@ -349,30 +370,41 @@ fn main() -> std::io::Result<()> {
                         cursor_backward(&mut user_input);
                         
                     } else if key == CTRL_n {
-                        cmd_highlight_cursor = (cmd_highlight_cursor + 1) % history_cmds.len();
+                        if history_cmds.len() != 0 {
+                            cmd_highlight_cursor = (cmd_highlight_cursor + 1) % history_cmds.len();
 
-                        if cmd_start_index + MAX_ROWS <= cmd_highlight_cursor {
-                            cmd_start_index += 1;
-                        }
+                            if cmd_start_index + MAX_ROWS <= cmd_highlight_cursor {
+                                cmd_start_index += 1;
+                            }
 
-                        if cmd_highlight_cursor < cmd_start_index {
-                            cmd_start_index = cmd_highlight_cursor;
+                            if cmd_highlight_cursor < cmd_start_index {
+                                cmd_start_index = cmd_highlight_cursor;
+                            }
                         }
                         
                     } else if key == CTRL_p {
-                        cmd_highlight_cursor = ((cmd_highlight_cursor as isize - 1) + history_cmds.len() as isize) as usize % history_cmds.len();
+                        if history_cmds.len() != 0 {
+                            cmd_highlight_cursor = ((cmd_highlight_cursor as isize - 1) + history_cmds.len() as isize) as usize % history_cmds.len();
 
-                        if cmd_highlight_cursor >= cmd_start_index + MAX_ROWS {
-                            cmd_start_index = ((history_cmds.len() as isize - MAX_ROWS as isize) as usize + history_cmds.len()) % history_cmds.len();
-                        } else if cmd_highlight_cursor < cmd_start_index {
-                            cmd_start_index = cmd_highlight_cursor;
+                            if cmd_highlight_cursor >= cmd_start_index + MAX_ROWS {
+                                cmd_start_index = ((history_cmds.len() as isize - MAX_ROWS as isize) as usize + history_cmds.len()) % history_cmds.len();
+                            } else if cmd_highlight_cursor < cmd_start_index {
+                                cmd_start_index = cmd_highlight_cursor;
+                            }
                         }
 
                     } else if key == BACKSPACE {
                         delete_backward(&mut user_input);
+                        /* and reset cmd_cursors */
+                        cmd_highlight_cursor = 0;
+                        cmd_start_index = 0;
                         
                     } else {
                         insert_key(&mut user_input, key);
+
+                        /* and reset cmd_cursors */
+                        cmd_highlight_cursor = 0;
+                        cmd_start_index = 0;
                     }
                     
                 } else {
@@ -387,14 +419,17 @@ fn main() -> std::io::Result<()> {
                         
                     } else if key == BACKSPACE {
                         delete_word_backward(&mut user_input);
+                        /* and reset cmd_cursors */
+                        cmd_highlight_cursor = 0;
+                        cmd_start_index = 0;
                     }
                     
                 }
 
                 /* screen display */
-                erase_current_output(previous_cmd_match_count);
+                erase_current_output(previously_displayed_cmd);
                 print_user_input(&mut user_input);
-                grab_matching_cmds(&mut history_cmds, &history, &mut user_input.bytes);
+                display_cmd_count = grab_matching_cmds(&mut history_cmds, &history, &mut user_input.bytes);
                 display_cmds(&history_cmds, cmd_start_index, cmd_highlight_cursor);
 
             },
@@ -403,7 +438,7 @@ fn main() -> std::io::Result<()> {
         io::stdout().flush().unwrap();
     }
     
-    erase_current_output(history_cmds.len());
+    erase_current_output(previously_displayed_cmd);
     restore_terminal(&mut terminal_at_start);
     Ok(())
 }
