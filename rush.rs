@@ -1,13 +1,15 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 
-use std::ffi::{c_int,c_uint,c_uchar};
+use std::ffi::{c_int,c_uint,c_uchar,c_ulong};
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
 use std::env;
 
 use std::collections::HashMap;
+
+use std::process::Command;
 
 //use std::io::Write; // <--- bring flush() into scope
 
@@ -34,6 +36,9 @@ unsafe extern "C" {
     fn tcgetattr(fd: c_int, termios_p: *mut Termios) -> c_int;
     fn tcsetattr(fd: c_int, optional_actions: c_int, termios_p: *const Termios) -> c_int;
     //fn readline(prompt: *const c_uchar) -> *mut c_uchar;
+
+    // use this to inject text to terminal
+    //fn ioctl(fd: c_int, op: c_ulong, ...) -> c_int;
 }
 
 struct User_Input {
@@ -440,5 +445,38 @@ fn main() -> std::io::Result<()> {
     
     erase_current_output(previously_displayed_cmd);
     restore_terminal(&mut terminal_at_start);
+
+    ////////////////////////////////////////////////////////////
+    // trying to print in input buffer the selected command
+    let mut selected = "";
+    for (i, (cmd, _score)) in history_cmds.into_iter().enumerate() {
+       if i == cmd_highlight_cursor {
+           selected = &cmd;
+           break;
+       }
+    }
+    
+    if selected.len() != 0 {
+        // launch xdotool but fuck that dependency...
+        Command::new("xdotool")
+            .arg("type")
+            .arg("--delay")
+            .arg("0")
+            .arg(selected)
+            .spawn()
+            .expect("`xdotool` is not installed");
+    }
+    //// werid because work on root but not me
+    //unsafe {
+    //    for b in selected.bytes() {
+    //        let mut ch = b as i8;
+    //        let res = ioctl(0,0x5412, &mut ch as *mut i8);
+    //        print!("{}",b as char);
+    //    }
+    //
+    //}
+
+    //io::stdout().flush().unwrap();
+    
     Ok(())
 }
