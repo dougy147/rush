@@ -239,25 +239,45 @@ fn print_user_input(input: &mut User_Input) -> () {
 }
 
 fn grab_matching_cmds<'a>(history_cmds: &mut HashMap<&'a str,usize>, history: &'a String, input: &mut [u8;512]) -> usize {
+    let history_count = history.matches("\n").count();
     let cmds = history.split("\n");
-    let search_string = str::from_utf8(input)
+    let search = str::from_utf8(input)
         .unwrap()
-        .trim_end_matches('\0');
+        .trim_end_matches('\0')
+        .to_string();
 
+    //let search = search_string.to_string();
+    
     history_cmds.clear();
 
+    let mut cmd_index = 0;
     let mut display_count = 0;
-    let mut cmd_score = 0; // will be changed later
     
     for cmd in cmds {
-        if cmd.contains(search_string) {
-            // save all of them to store in a hashmap
+        let mut cmd_score = 0; // will be changed later
+
+        for term in search.trim().split(' ') {
+
+            if term.is_empty() { continue }
+
+            if cmd.contains(term) {
+                cmd_score += history_count;
+            }
+            
+        }
+
+        if cmd_score > 0 || search.is_empty() { // when search empty keep all history lines
+            
             if display_count < MAX_ROWS && !history_cmds.contains_key(cmd) {
                 display_count += 1;
             }
+
+            cmd_score += cmd_index;
             history_cmds.insert(cmd, cmd_score);
-            cmd_score += 1;
+            
+            //println!("cmd = {} ; score = {}",cmd,cmd_score);
         }
+        cmd_index += 1;
     }
 
     return display_count
@@ -268,7 +288,14 @@ fn display_cmds(history_cmds: &HashMap<&str,usize>, start_index: usize, highligh
     /* display cmds */
     let mut cmd_match_count: usize = 0;
     
-    for (i, (&cmd, &_)) in history_cmds.into_iter().enumerate() {
+    //for (i, (&cmd, &_)) in history_cmds.into_iter().enumerate() {
+
+    let mut sorted: Vec<(_,_)> = history_cmds.iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(a.1));
+    //println!("{:?}", sorted);
+
+    //for (i, (&cmd, &_)) in history_cmds.into_iter().enumerate() {
+    for (i, (&cmd, &_)) in sorted.into_iter().enumerate() {
         if i < start_index { continue }
         if cmd_match_count < MAX_ROWS {
             let pad = 10;
