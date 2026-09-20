@@ -509,7 +509,10 @@ fn main() -> std::io::Result<()> {
     
     if command_was_selected {
         let mut selected = "";
-        for (i, (cmd, _score)) in history_cmds.into_iter().enumerate() {
+        let mut sorted: Vec<(_,_)> = history_cmds.iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(a.1));
+
+        for (i, (&cmd, &_score)) in sorted.into_iter().enumerate() {
             if i == cmd_highlight_cursor {
                 selected = &cmd;
                 break;
