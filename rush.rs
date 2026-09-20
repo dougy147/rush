@@ -6,12 +6,9 @@ use std::fs::File;
 use std::io;
 use std::io::prelude::*;
 use std::env;
+use std::cmp::min;
 
 use std::collections::HashMap;
-
-//use std::process::Command;
-
-//use std::io::Write; // <--- bring flush() into scope
 
 type cc_t = c_uchar;
 type speed_t = c_uint;
@@ -19,7 +16,7 @@ type tcflag_t = c_uint;
 
 const NCCS: usize = 32;
 
-#[derive(Debug,Default)] // Default is to allow 0-initialization, Debug to print it with {:?}
+#[derive(Debug,Default)] // Default allows 0-initialization, Debug for printing with {:?}
 #[repr(C)] // <-- without this modifying terminal attributes did not work out
 struct Termios {
     c_iflag: tcflag_t,
@@ -33,18 +30,15 @@ struct Termios {
 }
 
 struct winsize {
-	ws_row: c_ushort, //c_uint,
-	ws_col: c_ushort, //c_uint,
-	ws_xpixel: c_ushort,
-	ws_ypixel: c_ushort,
+	ws_row: c_ushort,
+	ws_col: c_ushort,
+	_ws_xpixel: c_ushort,
+	_ws_ypixel: c_ushort,
 }
 
 unsafe extern "C" {
     fn tcgetattr(fd: c_int, termios_p: *mut Termios) -> c_int;
     fn tcsetattr(fd: c_int, optional_actions: c_int, termios_p: *const Termios) -> c_int;
-    //fn readline(prompt: *const c_uchar) -> *mut c_uchar;
-
-    // use this to inject text to terminal
     fn ioctl(fd: c_int, op: c_ulong, ...) -> c_int;
 }
 
@@ -81,6 +75,9 @@ const CTRL_p: u8 = 16; // up row
 
 /* settigns */
 const MAX_ROWS: usize = 10; // display a maximum of 10 matching lines
+
+/* windows size */
+const TIOCGWINSZ: c_ulong = 0x5413;
 
 fn hide_cursor() -> () {
     print!("\x1b[?25l");
@@ -189,9 +186,6 @@ fn word_backward(user_input: &mut User_Input) -> () {
 
 fn delete_word_backward(user_input: &mut User_Input) -> () {
     // if cursor at end of string, force one backward
-    //if user_input.size > 0 && user_input.cursor == user_input.size {
-    //    user_input.cursor -= 1;
-    //}
     let specs = [b' ', b'"', b'\''];
     
     while user_input.size > 0 && user_input.cursor > 0 && specs.contains(&user_input.bytes[user_input.cursor-1])  {
@@ -212,14 +206,14 @@ fn delete_word_backward(user_input: &mut User_Input) -> () {
         user_input.size -= 1;
         user_input.bytes[user_input.size] = b'\0';
     }
-
 }
 
 fn print_user_input(input: &mut User_Input) -> () {
-
+    
+    ////////////////////////////////
     /* print a prompt if you want */
-    let prompt_color = 3;
-    print!("\x1b[1;{}mrush> \x1b[0m", prompt_color);
+    let prompt_color = 0;
+    print!("\x1b[1;3{}mrush> \x1b[0m", prompt_color);
     ////////////////////////////////
 
     let cursor_color = 7; // white
@@ -235,97 +229,93 @@ fn print_user_input(input: &mut User_Input) -> () {
         // emulate block cursor with space lol
         print!("\x1B[{}m \x1B[0m", cursor_color);
     }
-    
 }
 
-fn grab_matching_cmds<'a>(history_cmds: &mut HashMap<&'a str,usize>, history: &'a String, input: &mut [u8;512]) -> usize {
-    let history_count = history.matches("\n").count();
-    let cmds = history.split("\n");
-    let search = str::from_utf8(input)
+fn set_cmds_scores<'a>(history_cmds: &mut HashMap<&'a str,(usize,usize)>, user_input: &mut [u8;512]) {
+    
+    let history_count = history_cmds.len();
+    
+    let search = str::from_utf8(user_input)
         .unwrap()
         .trim_end_matches('\0')
         .to_string();
 
-    //let search = search_string.to_string();
+    let terms = search.trim().split_whitespace();
     
-    history_cmds.clear();
+    'outer: for (cmd,(index,score)) in history_cmds.iter_mut() {
+        
+        *score = 0;
 
-    let mut cmd_index = 0;
-    let mut display_count = 0;
-    
-    for cmd in cmds {
-        let mut cmd_score = 0; // will be changed later
+        if cmd.is_empty() { continue }
 
-        for term in search.trim().split(' ') {
-
-            if term.is_empty() { continue }
-
-            if cmd.contains(term) {
-                cmd_score += history_count;
+        for term in terms.clone() {
+            
+            if cmd.to_lowercase().contains(&term.to_lowercase()) {
+                *score += history_count;
+            } else {
+                *score = 0;
+                continue 'outer;
             }
             
         }
 
-        if cmd_score > 0 || search.is_empty() { // when search empty keep all history lines
-            
-            if display_count < MAX_ROWS && !history_cmds.contains_key(cmd) {
-                display_count += 1;
-            }
-
-            cmd_score += cmd_index;
-            history_cmds.insert(cmd, cmd_score);
-            
-            //println!("cmd = {} ; score = {}",cmd,cmd_score);
+        if *score > 0 || search.is_empty() { // when search empty keep all history lines
+            *score += *index;
         }
-        cmd_index += 1;
     }
-
-    return display_count
 }
 
-fn display_cmds(history_cmds: &HashMap<&str,usize>, start_index: usize, highlight_cursor: usize, rows: u16, cols: u16) {
-    // start_index: which cmd index to start displaying cmds from
+fn display_cmds<'a>(history_cmds: &'a HashMap<&'a str,(usize,usize)>, min_score: usize, start_index: usize, highlight_cursor: usize, _rows: u16, cols: u16) -> &'a str {
+
     /* display cmds */
-    let mut cmd_match_count: usize = 0;
+    let mut displayed: usize = 0;
+    let mut selected = "";
     
-    //for (i, (&cmd, &_)) in history_cmds.into_iter().enumerate() {
+    let pad = 10;
+    let c = cols as usize - pad;
 
-    let mut sorted: Vec<(_,_)> = history_cmds.iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(a.1));
-    //println!("{:?}", sorted);
+    let mut filtered:Vec<_> = history_cmds.iter().filter(|(_,(_,score))| *score >= min_score).collect();
+    filtered.sort_by(|a, b| b.1.cmp(a.1)); // descending sort scores
 
-    //for (i, (&cmd, &_)) in history_cmds.into_iter().enumerate() {
-    for (i, (&cmd, &_)) in sorted.into_iter().enumerate() {
-        if i < start_index { continue }
-        if cmd_match_count < MAX_ROWS {
-            let pad = 10;
-            let c = cols as usize - pad;
-            if i == highlight_cursor {
-                print!("\n    \x1b[0;37;7m{:c$}\x1b[0m", cmd);
-            } else {
-                print!("\n    \x1b[0m{:c$}", cmd);
-            }
-            cmd_match_count += 1;
+    let mut index = 0;
+    for (cmd, _) in filtered {
+        
+        if index < start_index {
+            index += 1;
+            continue;
         }
+        
+        if displayed >= MAX_ROWS { break }
+
+        print!("\n      ");
+        if displayed == highlight_cursor {
+            print!("\x1b[0;37;7m");
+            selected = cmd;
+        }
+        print!("{:.c$}\x1b[0m", cmd);
+
+        displayed += 1;
+        index += 1;
     }
+
+    return selected
 }
 
 fn update_term_size(rows: &mut u16, cols: &mut u16) {
     unsafe {
-        let TIOCGWINSZ = 0x5413;
         let w: winsize = std::mem::zeroed();
         ioctl(STDIN,TIOCGWINSZ,&w);
         //println!("w.ws_row = {:?} ; w.ws_col = {:?}", w.ws_row, w.ws_col);
         *rows = w.ws_row as u16;
         *cols = w.ws_col as u16;
     }
-    
 }
 
 fn main() -> std::io::Result<()> {
 
     let mut rows: u16 = 0;
     let mut cols: u16 = 0;
+    update_term_size(&mut rows,&mut cols);
     
     ***REMOVED***
     let history_env_var = "HISTFILE";
@@ -336,12 +326,27 @@ fn main() -> std::io::Result<()> {
     let mut file: File = File::open(history_file_path)?;
     
     let mut history = String::new();
-    let _size = file.read_to_string(&mut history);
 
-    //println!("[x] Read history file \"{}\" (size = {:?})", history_file_path, size);
+    match file.read_to_string(&mut history) {
+        Err(e) => return Err(e), // could not read file
+        Ok(_) => {}, // go on peacefully
+    }
+
+    // HashMap:  score => cmd
+    let mut history_cmds: HashMap<&str,(usize,usize)> = HashMap::new();
+
+    // populate history_cmds with scores = 0
+    let cmds = history.split("\n");
+    let mut index = 0;
+    for cmd in cmds {
+        if cmd.is_empty() { continue }
+        if !history_cmds.contains_key(cmd) {
+            index += 1;
+            history_cmds.insert(cmd,(index,0));
+        }
+    }
     
     let mut terminal_at_start: Termios = Default::default();
-    
     save_terminal(&mut terminal_at_start);
     
     let mut t: Termios = Default::default();
@@ -362,41 +367,33 @@ fn main() -> std::io::Result<()> {
         cursor: 0,
     };
 
-    // read user input in loop
-    let mut stdin = io::stdin().lock();
-
     let mut escape_mode: bool = false;
-
-    let mut display_cmd_count: usize = 0;
-    let mut previously_displayed_cmd: usize = 0;
     
     let mut cmd_start_index: usize = 0;
     let mut cmd_highlight_cursor: usize = 0;
 
-    // HashMap:  score => cmd
-    let mut history_cmds: HashMap<&str,usize> = HashMap::new();
-
     /* immediately print user prompt */
     print_user_input(&mut user_input);
-    // TODO: do we want to print cmds by default or only when user input?
-    io::stdout().flush().unwrap();
+    let mut selected = display_cmds(&history_cmds,0, 0, 0, rows, cols);
+    io::stdout().flush().unwrap();    
 
     let mut command_was_selected: bool = false;
+
+    let mut available_cmds;
+    available_cmds = history_cmds.len();
+
+    let mut displayed_count: usize = min(MAX_ROWS,available_cmds);
+    
+    // read user input in loop
+    let mut stdin = io::stdin().lock();
     
     //read byte by byte
     loop {
-        update_term_size(&mut rows,&mut cols);
         
         stdin.read_exact(&mut raw_key).unwrap();
         let key = raw_key[0];
 
-        // TODO: which key was pressed?
         match key {
-            
-            CTRL_c => {
-                //erase_current_output(cmd_match_count);
-                break;
-            }, // Ctrl+c
             
             ESC => {
                 escape_mode = true;
@@ -407,14 +404,17 @@ fn main() -> std::io::Result<()> {
                 //print!("key = <{}> ", key);
                 //io::stdout().flush().unwrap();
                 
-                previously_displayed_cmd = display_cmd_count;
+                if user_input.bytes[0] == 0 {
+                    available_cmds = history_cmds.len();
+                }
+                
+                if key == CTRL_c {
+                    break;
+                }
                 
                 if !escape_mode {
                     
                     if key == ENTER || key == CARRIAGE {
-                        // TODO : grab focused cmd, insert in current shell, exit rush
-                        //erase_current_output(previously_displayed_cmd);
-                        //print!("\n[!] select a cmd is not implemented yet\n");
                         command_was_selected = true;
                         break;
                         
@@ -431,27 +431,42 @@ fn main() -> std::io::Result<()> {
                         cursor_backward(&mut user_input);
                         
                     } else if key == CTRL_n {
-                        if history_cmds.len() != 0 {
-                            cmd_highlight_cursor = (cmd_highlight_cursor + 1) % history_cmds.len();
-
-                            if cmd_start_index + MAX_ROWS <= cmd_highlight_cursor {
+                        if available_cmds != 0 {
+                            cmd_highlight_cursor += 1;
+                            
+                            if cmd_highlight_cursor >= MAX_ROWS {
                                 cmd_start_index += 1;
                             }
 
-                            if cmd_highlight_cursor < cmd_start_index {
-                                cmd_start_index = cmd_highlight_cursor;
+                            if available_cmds > MAX_ROWS && cmd_start_index + MAX_ROWS >= available_cmds {
+                                cmd_start_index = 0;
+                                cmd_highlight_cursor = 0;
                             }
+
+                            if cmd_highlight_cursor >= available_cmds {
+                                cmd_start_index = 0;
+                                cmd_highlight_cursor = 0;
+                            }
+
+                            cmd_highlight_cursor = if cmd_highlight_cursor >= MAX_ROWS { MAX_ROWS - 1 } else { cmd_highlight_cursor };
+                            cmd_highlight_cursor = if cmd_highlight_cursor >= available_cmds { available_cmds - 1 } else { cmd_highlight_cursor };
+
                         }
                         
                     } else if key == CTRL_p {
-                        if history_cmds.len() > 1 {
-                            cmd_highlight_cursor = ((cmd_highlight_cursor as isize - 1) + history_cmds.len() as isize) as usize % history_cmds.len();
-
-                            if cmd_highlight_cursor >= cmd_start_index + MAX_ROWS {
-                                cmd_start_index = ((history_cmds.len() as isize - MAX_ROWS as isize) as usize + history_cmds.len()) % history_cmds.len();
-                            } else if cmd_highlight_cursor < cmd_start_index {
-                                cmd_start_index = cmd_highlight_cursor;
+                        if available_cmds != 0 {
+                            
+                            if cmd_highlight_cursor == 0 {
+                                if cmd_start_index == 0 {
+                                    cmd_highlight_cursor = if available_cmds > MAX_ROWS {MAX_ROWS - 1} else {available_cmds - 1};
+                                    cmd_start_index      = if available_cmds > MAX_ROWS {available_cmds - MAX_ROWS - 1} else {0};
+                                } else {
+                                    cmd_start_index -= 1;
+                                }
+                            } else {
+                                cmd_highlight_cursor -= 1;
                             }
+
                         }
 
                     } else if key == BACKSPACE {
@@ -487,19 +502,25 @@ fn main() -> std::io::Result<()> {
                     
                 }
 
+                /* compute scores */
+                set_cmds_scores(&mut history_cmds, &mut user_input.bytes);
+                available_cmds = history_cmds.values().filter(|(_,score)| *score > 0).count();
+                
                 /* screen display */
-                erase_current_output(previously_displayed_cmd);
+                update_term_size(&mut rows,&mut cols);
+                erase_current_output(displayed_count);
                 print_user_input(&mut user_input);
-                display_cmd_count = grab_matching_cmds(&mut history_cmds, &history, &mut user_input.bytes);
-                display_cmds(&history_cmds, cmd_start_index, cmd_highlight_cursor, rows, cols);
+                selected = display_cmds(&history_cmds,1, cmd_start_index, cmd_highlight_cursor, rows, cols);
 
+                /* recompute displayed */
+                displayed_count = if available_cmds > MAX_ROWS {MAX_ROWS} else {available_cmds};// - cmd_start_index;
             },
-            
+
         }
         io::stdout().flush().unwrap();
     }
     
-    erase_current_output(previously_displayed_cmd);
+    erase_current_output(displayed_count);
     restore_terminal(&mut terminal_at_start);
 
     ////////////////////////////////////////////////////////////
@@ -508,51 +529,10 @@ fn main() -> std::io::Result<()> {
     print!("\r\x1B[1A\r");
     
     if command_was_selected {
-        let mut selected = "";
-        let mut sorted: Vec<(_,_)> = history_cmds.iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(a.1));
-
-        for (i, (&cmd, &_score)) in sorted.into_iter().enumerate() {
-            if i == cmd_highlight_cursor {
-                selected = &cmd;
-                break;
-            }
-        }
-
         print!("\n{}", if selected.len() > 0 { selected } else {" "});
-
     } else {
         print!("\n ");
     }
-
-    // the new line is necessary if using our bash script ru.sh
-    // because lot of garbage is passed to "tee"
-
-    
-    
-    //if selected.len() != 0 {
-    //    // launch xdotool but fuck that dependency...
-    //    Command::new("xdotool")
-    //        .arg("type")
-    //        .arg("--delay")
-    //        .arg("0")
-    //        .arg(selected)
-    //        .spawn()
-    //        .expect("`xdotool` is not installed");
-    //}
-
-    
-    //// werid because work on root but not me
-    //unsafe {
-    //    for b in selected.bytes() {
-    //        let mut ch = b as i8;
-    //        let res = ioctl(0,0x5412, &mut ch as *mut i8);
-    //        print!("{}",b as char);
-    //    }
-    //
-    //}
-
-    //io::stdout().flush().unwrap();
     
     Ok(())
 }
