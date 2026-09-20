@@ -1,7 +1,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 
-use std::ffi::{c_int,c_uint,c_uchar,c_ulong};
+use std::ffi::{c_int,c_uint,c_uchar};
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
@@ -9,7 +9,7 @@ use std::env;
 
 use std::collections::HashMap;
 
-use std::process::Command;
+//use std::process::Command;
 
 //use std::io::Write; // <--- bring flush() into scope
 
@@ -245,15 +245,15 @@ fn grab_matching_cmds<'a>(history_cmds: &mut HashMap<&'a str,usize>, history: &'
     for cmd in cmds {
         if cmd.contains(search_string) {
             // save all of them to store in a hashmap
-            history_cmds.insert(cmd, cmd_score);
-            cmd_score += 1;
-            if display_count < MAX_ROWS {
+            if display_count < MAX_ROWS && !history_cmds.contains_key(cmd) {
                 display_count += 1;
             }
+            history_cmds.insert(cmd, cmd_score);
+            cmd_score += 1;
         }
     }
 
-    return display_count;
+    return display_count
 }
 
 fn display_cmds(history_cmds: &HashMap<&str,usize>, start_index: usize, highlight_cursor: usize) {
