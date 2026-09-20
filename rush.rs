@@ -329,6 +329,8 @@ fn main() -> std::io::Result<()> {
     print_user_input(&mut user_input);
     // TODO: do we want to print cmds by default or only when user input?
     io::stdout().flush().unwrap();
+
+    let mut command_was_selected: bool = false;
     
     //read byte by byte
     loop {
@@ -353,13 +355,14 @@ fn main() -> std::io::Result<()> {
                 //io::stdout().flush().unwrap();
                 
                 previously_displayed_cmd = display_cmd_count;
-                        
+                
                 if !escape_mode {
                     
                     if key == ENTER || key == CARRIAGE {
                         // TODO : grab focused cmd, insert in current shell, exit rush
                         //erase_current_output(previously_displayed_cmd);
                         //print!("\n[!] select a cmd is not implemented yet\n");
+                        command_was_selected = true;
                         break;
                         
                     } else if key == CTRL_a {
@@ -388,7 +391,7 @@ fn main() -> std::io::Result<()> {
                         }
                         
                     } else if key == CTRL_p {
-                        if history_cmds.len() != 0 {
+                        if history_cmds.len() > 1 {
                             cmd_highlight_cursor = ((cmd_highlight_cursor as isize - 1) + history_cmds.len() as isize) as usize % history_cmds.len();
 
                             if cmd_highlight_cursor >= cmd_start_index + MAX_ROWS {
@@ -448,24 +451,45 @@ fn main() -> std::io::Result<()> {
 
     ////////////////////////////////////////////////////////////
     // trying to print in input buffer the selected command
-    let mut selected = "";
-    for (i, (cmd, _score)) in history_cmds.into_iter().enumerate() {
-       if i == cmd_highlight_cursor {
-           selected = &cmd;
-           break;
-       }
-    }
+
+    print!("\r\x1B[1A\r");
     
-    if selected.len() != 0 {
-        // launch xdotool but fuck that dependency...
-        Command::new("xdotool")
-            .arg("type")
-            .arg("--delay")
-            .arg("0")
-            .arg(selected)
-            .spawn()
-            .expect("`xdotool` is not installed");
+    if command_was_selected {
+        let mut selected = "";
+        for (i, (cmd, _score)) in history_cmds.into_iter().enumerate() {
+            if i == cmd_highlight_cursor {
+                selected = &cmd;
+                break;
+            }
+        }
+        print!("\n{}", selected);
+
+        unsafe {
+            //std::env::set_var("READLINE_LINE", &selected.to_string());
+            std::env::set_var("READLINE_LINE", &"abcde");
+            std::env::set_var("READLINE_POINT", &"0x7fffffff");
+        }
+    } else {
+        print!("\n ");
     }
+
+    // the new line is necessary if using our bash script ru.sh
+    // because lot of garbage is passed to "tee"
+
+    
+    
+    //if selected.len() != 0 {
+    //    // launch xdotool but fuck that dependency...
+    //    Command::new("xdotool")
+    //        .arg("type")
+    //        .arg("--delay")
+    //        .arg("0")
+    //        .arg(selected)
+    //        .spawn()
+    //        .expect("`xdotool` is not installed");
+    //}
+
+    
     //// werid because work on root but not me
     //unsafe {
     //    for b in selected.bytes() {
