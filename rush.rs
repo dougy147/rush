@@ -1,7 +1,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 
-use std::ffi::{c_int,c_uint,c_uchar};
+use std::ffi::{c_int,c_uint,c_uchar,c_ulong,c_ushort};
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
@@ -32,13 +32,20 @@ struct Termios {
     c_ospeed: speed_t
 }
 
+struct winsize {
+	ws_row: c_ushort, //c_uint,
+	ws_col: c_ushort, //c_uint,
+	ws_xpixel: c_ushort,
+	ws_ypixel: c_ushort,
+}
+
 unsafe extern "C" {
     fn tcgetattr(fd: c_int, termios_p: *mut Termios) -> c_int;
     fn tcsetattr(fd: c_int, optional_actions: c_int, termios_p: *const Termios) -> c_int;
     //fn readline(prompt: *const c_uchar) -> *mut c_uchar;
 
     // use this to inject text to terminal
-    //fn ioctl(fd: c_int, op: c_ulong, ...) -> c_int;
+    fn ioctl(fd: c_int, op: c_ulong, ...) -> c_int;
 }
 
 struct User_Input {
@@ -256,7 +263,7 @@ fn grab_matching_cmds<'a>(history_cmds: &mut HashMap<&'a str,usize>, history: &'
     return display_count
 }
 
-fn display_cmds(history_cmds: &HashMap<&str,usize>, start_index: usize, highlight_cursor: usize) {
+fn display_cmds(history_cmds: &HashMap<&str,usize>, start_index: usize, highlight_cursor: usize, rows: u16, cols: u16) {
     // start_index: which cmd index to start displaying cmds from
     /* display cmds */
     let mut cmd_match_count: usize = 0;
@@ -264,17 +271,34 @@ fn display_cmds(history_cmds: &HashMap<&str,usize>, start_index: usize, highligh
     for (i, (&cmd, &_)) in history_cmds.into_iter().enumerate() {
         if i < start_index { continue }
         if cmd_match_count < MAX_ROWS {
+            let pad = 10;
+            let c = cols as usize - pad;
             if i == highlight_cursor {
-                print!("\n    \x1b[0;37;7m{}\x1b[0m", cmd);
+                print!("\n    \x1b[0;37;7m{:c$}\x1b[0m", cmd);
             } else {
-                print!("\n    \x1b[0m{}", cmd);
+                print!("\n    \x1b[0m{:c$}", cmd);
             }
             cmd_match_count += 1;
         }
     }
 }
 
+fn update_term_size(rows: &mut u16, cols: &mut u16) {
+    unsafe {
+        let TIOCGWINSZ = 0x5413;
+        let w: winsize = std::mem::zeroed();
+        ioctl(STDIN,TIOCGWINSZ,&w);
+        //println!("w.ws_row = {:?} ; w.ws_col = {:?}", w.ws_row, w.ws_col);
+        *rows = w.ws_row as u16;
+        *cols = w.ws_col as u16;
+    }
+    
+}
+
 fn main() -> std::io::Result<()> {
+
+    let mut rows: u16 = 0;
+    let mut cols: u16 = 0;
     
     ***REMOVED***
     let history_env_var = "HISTFILE";
@@ -334,6 +358,8 @@ fn main() -> std::io::Result<()> {
     
     //read byte by byte
     loop {
+        update_term_size(&mut rows,&mut cols);
+        
         stdin.read_exact(&mut raw_key).unwrap();
         let key = raw_key[0];
 
@@ -438,7 +464,7 @@ fn main() -> std::io::Result<()> {
                 erase_current_output(previously_displayed_cmd);
                 print_user_input(&mut user_input);
                 display_cmd_count = grab_matching_cmds(&mut history_cmds, &history, &mut user_input.bytes);
-                display_cmds(&history_cmds, cmd_start_index, cmd_highlight_cursor);
+                display_cmds(&history_cmds, cmd_start_index, cmd_highlight_cursor, rows, cols);
 
             },
             
@@ -462,13 +488,9 @@ fn main() -> std::io::Result<()> {
                 break;
             }
         }
-        print!("\n{}", selected);
 
-        unsafe {
-            //std::env::set_var("READLINE_LINE", &selected.to_string());
-            std::env::set_var("READLINE_LINE", &"abcde");
-            std::env::set_var("READLINE_POINT", &"0x7fffffff");
-        }
+        print!("\n{}", if selected.len() > 0 { selected } else {" "});
+
     } else {
         print!("\n ");
     }
