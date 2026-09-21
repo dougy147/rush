@@ -308,6 +308,7 @@ fn display_cmds<'a>(history_cmds: &'a HashMap<&'a str,(usize,usize)>, min_score:
     let pad = prompt_text.len() + 10;
     let c = cols as usize - pad;
 
+    // TODO: abstract this out of function and compute only when we need to rescore
     let mut filtered:Vec<_> = history_cmds.iter().filter(|(_,(_,score))| *score >= min_score).collect();
     filtered.sort_by(|a, b| b.1.cmp(a.1)); // descending sort scores
 
@@ -431,6 +432,8 @@ fn main() -> std::io::Result<()> {
     
     // read user input in loop
     let mut stdin = io::stdin().lock();
+
+    let mut rescore: bool;
     
     //read byte by byte
     loop {
@@ -446,8 +449,10 @@ fn main() -> std::io::Result<()> {
             },
             
             _ => {
-                //print!("key = <{}> ", key);
+                //print!("key = <{}> \n", key);
                 //io::stdout().flush().unwrap();
+
+                rescore = true;
                 
                 if user_input.bytes[0] == 0 {
                     available_cmds = history_cmds.len();
@@ -471,9 +476,12 @@ fn main() -> std::io::Result<()> {
 
                     } else if key == CTRL_f {
                         cursor_forward(&mut user_input);
+                        rescore = false;
                         
                     } else if key == CTRL_b {
                         cursor_backward(&mut user_input);
+                        rescore = false;
+                        
                     } else if key == CTRL_k {
                         delete_from_cursor_to_eol(&mut user_input);
                         cmd_highlight_cursor = 0;
@@ -486,10 +494,13 @@ fn main() -> std::io::Result<()> {
                         
                     } else if key == CTRL_n {
                         if available_cmds != 0 {
+
                             cmd_highlight_cursor += 1;
                             
                             if cmd_highlight_cursor >= MAX_ROWS {
                                 cmd_start_index += 1;
+                            } else {
+                                rescore = false;
                             }
 
                             if available_cmds > MAX_ROWS && cmd_start_index + MAX_ROWS >= available_cmds {
@@ -512,6 +523,9 @@ fn main() -> std::io::Result<()> {
                             
                             if cmd_highlight_cursor == 0 {
                                 if cmd_start_index == 0 {
+                                    if available_cmds <= MAX_ROWS {
+                                        rescore = false;
+                                    }
                                     cmd_highlight_cursor = if available_cmds > MAX_ROWS {MAX_ROWS - 1} else {available_cmds - 1};
                                     cmd_start_index      = if available_cmds > MAX_ROWS {available_cmds - MAX_ROWS - 1} else {0};
                                 } else {
@@ -519,6 +533,7 @@ fn main() -> std::io::Result<()> {
                                 }
                             } else {
                                 cmd_highlight_cursor -= 1;
+                                rescore = false;
                             }
 
                         }
@@ -543,9 +558,11 @@ fn main() -> std::io::Result<()> {
 
                     if key == b'b' {
                         word_backward(&mut user_input);
+                        rescore = false;
                         
                     } else if key == b'f' {
                         word_forward(&mut user_input);
+                        rescore = false;
                         
                     } else if key == BACKSPACE {
                         delete_word_backward(&mut user_input);
@@ -557,9 +574,11 @@ fn main() -> std::io::Result<()> {
                 }
 
                 /* compute scores */
-                set_cmds_scores(&mut history_cmds, &mut user_input.bytes);
-                available_cmds = history_cmds.values().filter(|(_,score)| *score > 0).count();
-                
+                if rescore {
+                    set_cmds_scores(&mut history_cmds, &mut user_input.bytes);
+                    available_cmds = history_cmds.values().filter(|(_,score)| *score > 0).count();
+                } 
+
                 /* screen display */
                 update_term_size(&mut rows,&mut cols);
                 erase_current_output(displayed_count);
