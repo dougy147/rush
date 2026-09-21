@@ -41,8 +41,10 @@ unsafe extern "C" {
     fn ioctl(fd: c_int, op: c_ulong, ...) -> c_int;
 }
 
+const MAX_CMD_LEN: usize = 512;
+
 struct User_Input {
-    bytes: [u8;512],
+    bytes: [u8;MAX_CMD_LEN],
     size: usize,
     cursor: usize, // cursor position
 }
@@ -71,6 +73,8 @@ const CTRL_b: u8 = 2; // backward cursor
 const CTRL_f: u8 = 6; // forward cursor
 const CTRL_n: u8 = 14; // down row
 const CTRL_p: u8 = 16; // up row
+const CTRL_u: u8 = 21; // delete back from cursor to bol
+const CTRL_k: u8 = 11; // delete forward from cursor to eol
 
 /* settigns */
 const MAX_ROWS: usize = 20; // display a maximum of 10 matching lines
@@ -123,6 +127,34 @@ fn delete_backward(user_input: &mut User_Input) {
         user_input.size -= 1;
         user_input.cursor -= 1;
         user_input.bytes[user_input.size] = b'\0';
+    }
+}
+
+fn delete_from_cursor_to_bol(user_input: &mut User_Input) {
+    // NOTE: we need to null terminate '\0'
+
+    ////////////////////////////////////////
+    // tringsas|t|ring
+    // ^
+    if user_input.cursor > 0 {
+        for i in user_input.cursor..user_input.size {
+            user_input.bytes[i-user_input.cursor] = user_input.bytes[i];
+        }
+        user_input.size -= user_input.cursor;
+        user_input.cursor = 0;
+        for i in user_input.size..MAX_CMD_LEN {
+            user_input.bytes[i] = b'\0';
+        }
+    }
+}
+
+fn delete_from_cursor_to_eol(user_input: &mut User_Input) {
+    // NOTE: we need to null terminate '\0'
+    if user_input.cursor < user_input.size {
+        for i in user_input.cursor..user_input.size {
+            user_input.bytes[i] = b'\0';
+        }
+        user_input.size -= user_input.size - user_input.cursor;
     }
 }
 
@@ -233,7 +265,7 @@ fn print_user_input(input: &mut User_Input) -> () {
     }
 }
 
-fn set_cmds_scores<'a>(history_cmds: &mut HashMap<&'a str,(usize,usize)>, user_input: &mut [u8;512]) {
+fn set_cmds_scores<'a>(history_cmds: &mut HashMap<&'a str,(usize,usize)>, user_input: &mut [u8;MAX_CMD_LEN]) {
     
     let history_count = history_cmds.len();
     
@@ -374,7 +406,7 @@ fn main() -> std::io::Result<()> {
     // check here for more shortcuts : https://github.com/mateolafalce/k_board/blob/main/src/keys.rs
     
     let mut user_input = User_Input {
-        bytes: [0;512],
+        bytes: [0;MAX_CMD_LEN],
         size: 0,
         cursor: 0,
     };
@@ -384,8 +416,9 @@ fn main() -> std::io::Result<()> {
     let mut cmd_start_index: usize = 0;
     let mut cmd_highlight_cursor: usize = 0;
 
-    /* immediately print user prompt */
+    /* immediately print user prompt  and compute first iteration */
     print_user_input(&mut user_input);
+    set_cmds_scores(&mut history_cmds, &mut user_input.bytes);
     let mut selected = display_cmds(&history_cmds,0, 0, 0, rows, cols);
     io::stdout().flush().unwrap();    
 
@@ -441,6 +474,15 @@ fn main() -> std::io::Result<()> {
                         
                     } else if key == CTRL_b {
                         cursor_backward(&mut user_input);
+                    } else if key == CTRL_k {
+                        delete_from_cursor_to_eol(&mut user_input);
+                        cmd_highlight_cursor = 0;
+                        cmd_start_index = 0;
+                        
+                    } else if key == CTRL_u {
+                        delete_from_cursor_to_bol(&mut user_input);
+                        cmd_highlight_cursor = 0;
+                        cmd_start_index = 0;
                         
                     } else if key == CTRL_n {
                         if available_cmds != 0 {
