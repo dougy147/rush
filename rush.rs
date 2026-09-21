@@ -337,7 +337,7 @@ fn display_cmds<'a>(history_cmds: &'a HashMap<&'a str,(usize,usize)>, min_score:
             print!("{} \x1b[0m{}", default_headblock, default_color);
         }
         //print!("{:.c$}\x1b[0m", cmd);
-        print!(" {:c$}\x1b[0m", &cmd[..c.min(cmd.len())]);
+        print!(" {:c$}\x1b[0m", &cmd[..c.min(cmd.len())].replace('\t',"    ")); // tabs can mess with output  
 
         displayed += 1;
         index += 1;

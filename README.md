@@ -4,9 +4,7 @@ I chose Rust to force myself programming in this syntax-noisy language.
 # Quick start
 
 ```console
-$ source ./ru.sh # then press <C-r>
-# or simply
-$ ./rush
+$ source ./rush.bash # then press <C-r>
 ```
 
 # SOURCES
