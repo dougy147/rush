@@ -7,7 +7,6 @@ use std::io;
 use std::io::prelude::*;
 use std::env;
 use std::cmp::min;
-
 use std::collections::HashMap;
 
 type cc_t = c_uchar;
@@ -74,10 +73,13 @@ const CTRL_n: u8 = 14; // down row
 const CTRL_p: u8 = 16; // up row
 
 /* settigns */
-const MAX_ROWS: usize = 10; // display a maximum of 10 matching lines
+const MAX_ROWS: usize = 20; // display a maximum of 10 matching lines
 
 /* windows size */
 const TIOCGWINSZ: c_ulong = 0x5413;
+
+//const prompt: &str = "\x1b[1;30mrush> \x1b[0m";
+const prompt_text: &str = " > ";
 
 fn hide_cursor() -> () {
     print!("\x1b[?25l");
@@ -212,8 +214,8 @@ fn print_user_input(input: &mut User_Input) -> () {
     
     ////////////////////////////////
     /* print a prompt if you want */
-    let prompt_color = 0;
-    print!("\x1b[1;3{}mrush> \x1b[0m", prompt_color);
+    let prompt: String = format!("\x1b[1;32;48;5;237m{}\x1b[0m", prompt_text);
+    print!("{}",prompt);
     ////////////////////////////////
 
     let cursor_color = 7; // white
@@ -271,13 +273,20 @@ fn display_cmds<'a>(history_cmds: &'a HashMap<&'a str,(usize,usize)>, min_score:
     let mut displayed: usize = 0;
     let mut selected = "";
     
-    let pad = 10;
+    let pad = prompt_text.len() + 10;
     let c = cols as usize - pad;
 
     let mut filtered:Vec<_> = history_cmds.iter().filter(|(_,(_,score))| *score >= min_score).collect();
     filtered.sort_by(|a, b| b.1.cmp(a.1)); // descending sort scores
 
     let mut index = 0;
+
+    // colors
+    let default_color = "\x1b[0;37;49m";
+    let highlight_color = "\x1b[1;37;48;5;237m";
+    let default_headblock = "\x1b[0;32;48;5;237m";
+    let highlight_headblock = "\x1b[0;;42m";
+
     for (cmd, _) in filtered {
         
         if index < start_index {
@@ -287,12 +296,15 @@ fn display_cmds<'a>(history_cmds: &'a HashMap<&'a str,(usize,usize)>, min_score:
         
         if displayed >= MAX_ROWS { break }
 
-        print!("\n      ");
+        print!("\n{}", " ".repeat(prompt_text.len()));
         if displayed == highlight_cursor {
-            print!("\x1b[0;37;7m");
+            print!("{} \x1b[0m{}", highlight_headblock, highlight_color);
             selected = cmd;
+        } else {
+            print!("{} \x1b[0m{}", default_headblock, default_color);
         }
-        print!("{:.c$}\x1b[0m", cmd);
+        //print!("{:.c$}\x1b[0m", cmd);
+        print!(" {:c$}\x1b[0m", &cmd[..c.min(cmd.len())]);
 
         displayed += 1;
         index += 1;
