@@ -2,7 +2,11 @@
 
 _rush() { 
     local tmp=$(mktemp)
-    ./rush | tee -pi $tmp # grab echoed last line from ./rush
+    if command -v rush >/dev/null; then 
+        rush | tee -pi $tmp
+    else
+        ./rush | tee -pi $tmp # grab echoed last line from ./rush
+    fi
     echo -e "\r\e[1A\r"   # erase ./rush last line from terminal
     output="$(tail -n1 $tmp | sed 's/^ *$//')"
     if [[ -n output ]]; then
