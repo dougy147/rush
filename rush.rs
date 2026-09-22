@@ -78,9 +78,7 @@ const CTRL_n: u8 = 14; // down row
 const CTRL_p: u8 = 16; // up row
 const CTRL_u: u8 = 21; // delete back from cursor to bol
 const CTRL_k: u8 = 11; // delete forward from cursor to eol
-
-/* settigns */
-const MAX_ROWS: usize = 20; // display a maximum of 10 matching lines
+const CTRL_l: u8 = 12; // take the whole screen
 
 /* windows size */
 const TIOCGWINSZ: c_ulong = 0x5413;
@@ -312,7 +310,7 @@ fn set_scores<'a>(content_cmds: &mut HashMap<(usize, &'a str),usize>, user_input
     }
 }
 
-fn display_lines<'a>(content_cmds: &'a HashMap<(usize, &'a str),usize>, min_score: usize, start_index: usize, highlight_cursor: usize, _rows: u16, cols: u16, mode: &Mode) -> &'a str {
+fn display_lines<'a>(content_cmds: &'a HashMap<(usize, &'a str),usize>, min_score: usize, start_index: usize, highlight_cursor: usize, max_rows: usize, _rows: u16, cols: u16, mode: &Mode) -> &'a str {
 
     /* display cmds */
     let mut displayed: usize = 0;
@@ -347,7 +345,7 @@ fn display_lines<'a>(content_cmds: &'a HashMap<(usize, &'a str),usize>, min_scor
             continue;
         }
         
-        if displayed >= MAX_ROWS { break }
+        if displayed >= max_rows { break }
 
         print!("\n{}", " ".repeat(prompt_text.len()));
         if displayed == highlight_cursor {
@@ -388,8 +386,11 @@ fn update_term_size(rows: &mut u16, cols: &mut u16) {
     };
 }
 
+#[allow(nonstandard_style)]
 fn main() -> std::io::Result<()> {
-
+    let mut MAX_ROWS: usize = 10;
+    assert!(MAX_ROWS > 1);
+    
     /* prepare terminal */
     let mut rows: u16 = 0;
     let mut cols: u16 = 0;
@@ -496,7 +497,7 @@ fn main() -> std::io::Result<()> {
     /* immediately print user prompt  and compute first iteration */
     print_user_input(&mut user_input);
     set_scores(&mut content_map, &mut user_input.bytes, &mode);
-    let mut selected = display_lines(&content_map,0, 0, 0, rows, cols, &mode);
+    let mut selected = display_lines(&content_map,0, 0, 0, MAX_ROWS, rows, cols, &mode);
     io::stdout().flush().unwrap();
 
     //if mode == Mode::STDIN {
@@ -533,7 +534,9 @@ fn main() -> std::io::Result<()> {
         stdin.read_exact(&mut raw_key).unwrap();
         let key = raw_key[0];
         //print!("key = <{}> \n\n\n", key);
-
+        
+        rescore = false;
+        
         match key {
 
             ESC => {
@@ -544,8 +547,6 @@ fn main() -> std::io::Result<()> {
             _ => {
                 //print!("key = <{}> \n", key);
                 //io::stdout().flush().unwrap();
-
-                rescore = true;
                 
                 if user_input.bytes[0] == 0 {
                     available_lines = content_map.len();
@@ -579,11 +580,18 @@ fn main() -> std::io::Result<()> {
                         delete_from_cursor_to_eol(&mut user_input);
                         line_highlight_cursor = 0;
                         line_start_index = 0;
+                        rescore = true;
+
+                    } else if key == CTRL_l {
+                        print!("\x2B[2J\x1B[1;1H");
+                        update_term_size(&mut rows, &mut cols);
+                        MAX_ROWS = rows as usize - 1;
                         
                     } else if key == CTRL_u {
                         delete_from_cursor_to_bol(&mut user_input);
                         line_highlight_cursor = 0;
                         line_start_index = 0;
+                        rescore = true;
                         
                     } else if key == CTRL_n {
                         if available_lines != 0 {
@@ -592,8 +600,6 @@ fn main() -> std::io::Result<()> {
                             
                             if line_highlight_cursor > MAX_ROWS - 1 {
                                 line_start_index += 1;
-                            } else {
-                                rescore = false;
                             }
 
                             if available_lines > MAX_ROWS && line_start_index + MAX_ROWS > available_lines {
@@ -616,9 +622,6 @@ fn main() -> std::io::Result<()> {
                             
                             if line_highlight_cursor == 0 {
                                 if line_start_index == 0 {
-                                    if available_lines <= MAX_ROWS {
-                                        rescore = false;
-                                    }
                                     line_highlight_cursor = if available_lines > MAX_ROWS {MAX_ROWS - 1} else {available_lines - 1};
                                     line_start_index      = if available_lines > MAX_ROWS {available_lines - MAX_ROWS} else {0};
                                 } else {
@@ -626,7 +629,6 @@ fn main() -> std::io::Result<()> {
                                 }
                             } else {
                                 line_highlight_cursor -= 1;
-                                rescore = false;
                             }
 
                         }
@@ -636,6 +638,7 @@ fn main() -> std::io::Result<()> {
                         /* and reset line_cursors */
                         line_highlight_cursor = 0;
                         line_start_index = 0;
+                        rescore = true;
                         
                     } else {
                         insert_key(&mut user_input, key);
@@ -643,6 +646,7 @@ fn main() -> std::io::Result<()> {
                         /* and reset line_cursors */
                         line_highlight_cursor = 0;
                         line_start_index = 0;
+                        rescore = true;
                     }
                     
                 } else {
@@ -662,6 +666,7 @@ fn main() -> std::io::Result<()> {
                         /* and reset line_cursors */
                         line_highlight_cursor = 0;
                         line_start_index = 0;
+                        rescore = true;
                     }
                     
                 }
@@ -677,7 +682,7 @@ fn main() -> std::io::Result<()> {
                 erase_current_output(displayed_count);
                 print_user_input(&mut user_input);
                 
-                selected = display_lines(&content_map,1, line_start_index, line_highlight_cursor, rows, cols, &mode);
+                selected = display_lines(&content_map,1, line_start_index, line_highlight_cursor, MAX_ROWS, rows, cols, &mode);
 
                 /* recompute displayed */
                 displayed_count = if available_lines > MAX_ROWS {MAX_ROWS} else {available_lines};// - line_start_index;
