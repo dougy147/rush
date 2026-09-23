@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::os::fd::AsRawFd;
 
+use std::process::Command;
+
 type cc_t = c_uchar;
 type speed_t = c_uint;
 type tcflag_t = c_uint;
@@ -710,6 +712,18 @@ fn main() -> std::io::Result<()> {
     if command_was_selected {
         if mode == Mode::HISTORY {
             print!("\n{}", if selected.1.len() > 0 { selected.1 } else {" "});
+        } else if mode == Mode::FILE {
+            let editor_env_var = "EDITOR";
+            let editor = env::var(editor_env_var)
+                .map_err(|error| print!("{error}: Could not find environment variable \"{}\"", editor_env_var))
+                .unwrap();
+
+            //println!("{} {} +{}",editor, content_file_path, selected.0.to_string());
+            Command::new(editor)
+                .arg(content_file_path)
+                .arg(format!("+{}",selected.0.to_string()))
+                .status()
+                .expect("`{editor}` should be executable");
         }
     } else {
         print!("\n ");
