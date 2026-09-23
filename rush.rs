@@ -104,7 +104,7 @@ enum Mode {
     NONE,
     HISTORY, // ALT_1  => default mode
     FILE,    // ALT_2 => display file in rush (same as HISTORY but reversed display)
-    COMMAND, // ALT_3  => execute a command from input and show result in rush
+    COMPILE, // ALT_3  => execute a command from input and show result in rush
     STDIN,
 }
 
@@ -356,6 +356,7 @@ fn display_lines<'a>(content_cmds: &'a HashMap<(usize, &'a str),usize>, min_scor
     let highlight_headblock = "\x1b[0;;42m";
 
     for (key,score) in filtered {
+        
         let (_, cmd) = key;
 
         if index < start_index || *score < min_score {
@@ -438,7 +439,7 @@ fn main() -> std::io::Result<()> {
                 mode = Mode::FILE;
                 content_file_path = args[i+1+1].clone();
             },
-            "--command" | "-c" => mode = Mode::COMMAND,
+            "--compile" | "-c" => mode = Mode::COMPILE,
             "--stdin"   | "-"  => mode = Mode::STDIN,
             _ => {},
         }
@@ -471,7 +472,7 @@ fn main() -> std::io::Result<()> {
             }, // go on peacefully
         }
         
-    } else if mode == Mode::STDIN {
+    } else if mode == Mode::STDIN || mode == Mode::COMPILE {
         match io::stdin().read_to_end(&mut content_bytes) {
             Err(e) => return Err(e),
             Ok(_)  => {
@@ -502,6 +503,13 @@ fn main() -> std::io::Result<()> {
         //println!("inserting : <{}>", line);
 
     }
+    
+    // overwrite previous output if in COMPILE mode
+    // TODO: but do this only if output was displayed in stdout
+    //if mode == Mode::COMPILE {
+    //    erase_current_output(content_map.len());
+    //    io::stdout().flush().unwrap();
+    //}
 
     /* prepare user input */
     let mut raw_key = [0u8;1];
@@ -537,7 +545,7 @@ fn main() -> std::io::Result<()> {
     let mut stdin = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
     let fd = stdin.as_raw_fd();
     
-    if mode == Mode::STDIN {
+    if mode == Mode::STDIN || mode == Mode::COMPILE {
         save_terminal(fd, &mut terminal_at_start);
         unsafe { tcgetattr(fd, &mut t) };
         set_terminal_raw_mode(fd, &mut t)
