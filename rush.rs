@@ -450,6 +450,7 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
+    let mut content_bytes = Vec::new();
     let mut content = String::new();
     
     if mode == Mode::HISTORY || mode == Mode::FILE {
@@ -463,15 +464,19 @@ fn main() -> std::io::Result<()> {
         }
        
         let mut file: File = File::open(content_file_path.clone())?;
-        match file.read_to_string(&mut content) {
+        match file.read_to_end(&mut content_bytes) {
             Err(e) => return Err(e), // could not read content
-            Ok(_) => {}, // go on peacefully
+            Ok(_) => {
+                content = String::from_utf8_lossy(&content_bytes).to_string();
+            }, // go on peacefully
         }
         
     } else if mode == Mode::STDIN {
-        match io::stdin().read_to_string(&mut content) {
+        match io::stdin().read_to_end(&mut content_bytes) {
             Err(e) => return Err(e),
-            Ok(_)  => {},
+            Ok(_)  => {
+                content = String::from_utf8_lossy(&content_bytes).to_string();
+            },
         }
         //println!("<{}>", content);
     }
@@ -513,10 +518,6 @@ fn main() -> std::io::Result<()> {
     set_scores(&mut content_map, &mut user_input.bytes, &mode);
     let mut selected = display_lines(&content_map,0, 0, 0, MAX_ROWS, rows, cols, &mode);
     io::stdout().flush().unwrap();
-
-    //if mode == Mode::STDIN {
-    //    return Ok(());
-    //}
 
     let mut command_was_selected: bool = false;
     let mut available_lines = content_map.len();
