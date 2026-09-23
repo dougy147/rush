@@ -55,6 +55,16 @@ struct User_Input {
 }
 
 /* streams */
+impl User_Input {
+    fn new() -> Self {
+        Self {
+            bytes: [0;MAX_LINE_LEN],
+            size: 0,
+            cursor: 0,
+        }        
+    }
+}
+
 const STDIN: c_int = 0;
 
 /* terminal attributes */
@@ -490,11 +500,7 @@ fn main() -> std::io::Result<()> {
 
     /* prepare user input */
     let mut raw_key = [0u8;1];
-    let mut user_input = User_Input {
-        bytes: [0;MAX_LINE_LEN],
-        size: 0,
-        cursor: 0,
-    };
+    let mut user_input = User_Input::new();
 
     let mut escape_mode: bool = false;
 
