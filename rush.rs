@@ -315,11 +315,11 @@ fn set_scores<'a>(content_cmds: &mut HashMap<(usize, &'a str),usize>, user_input
     }
 }
 
-fn display_lines<'a>(content_cmds: &'a HashMap<(usize, &'a str),usize>, min_score: usize, start_index: usize, highlight_cursor: usize, max_rows: usize, _rows: u16, cols: u16, mode: &Mode) -> &'a str {
+fn display_lines<'a>(content_cmds: &'a HashMap<(usize, &'a str),usize>, min_score: usize, start_index: usize, highlight_cursor: usize, max_rows: usize, _rows: u16, cols: u16, mode: &Mode) -> (usize, &'a str) {
 
     /* display cmds */
     let mut displayed: usize = 0;
-    let mut selected = "";
+    let mut selected: (usize, &'a str) = (0,""); // selected key from content_cmds
     
     let pad = prompt_text.len() + 10;
     let c = cols as usize - pad;
@@ -343,7 +343,8 @@ fn display_lines<'a>(content_cmds: &'a HashMap<(usize, &'a str),usize>, min_scor
     let default_headblock = "\x1b[0;32;48;5;237m";
     let highlight_headblock = "\x1b[0;;42m";
 
-    for ((_,cmd),score) in filtered {
+    for (key,score) in filtered {
+        let (_, cmd) = key;
 
         if index < start_index || *score < min_score {
             index += 1;
@@ -355,7 +356,7 @@ fn display_lines<'a>(content_cmds: &'a HashMap<(usize, &'a str),usize>, min_scor
         print!("\n{}", " ".repeat(prompt_text.len()));
         if displayed == highlight_cursor {
             print!("{} \x1b[0m{}", highlight_headblock, highlight_color);
-            selected = cmd;
+            selected = *key;
         } else {
             print!("{} \x1b[0m{}", default_headblock, default_color);
         }
@@ -448,8 +449,8 @@ fn main() -> std::io::Result<()> {
                 .map_err(|error| print!("{error}: Could not find environment variable \"{}\"", content_env_var))
                 .unwrap();
         }
-        
-        let mut file: File = File::open(content_file_path)?;
+       
+        let mut file: File = File::open(content_file_path.clone())?;
         match file.read_to_string(&mut content) {
             Err(e) => return Err(e), // could not read content
             Ok(_) => {}, // go on peacefully
@@ -707,7 +708,9 @@ fn main() -> std::io::Result<()> {
     print!("\r\x1B[1A\r");
     
     if command_was_selected {
-        print!("\n{}", if selected.len() > 0 { selected } else {" "});
+        if mode == Mode::HISTORY {
+            print!("\n{}", if selected.1.len() > 0 { selected.1 } else {" "});
+        }
     } else {
         print!("\n ");
     }
