@@ -215,7 +215,7 @@ fn word_forward(user_input: &mut User_Input) -> () {
 
 fn word_backward(user_input: &mut User_Input) -> () {
     // if cursor at end of string, force one backward
-    if user_input.cursor > 0 && user_input.cursor == user_input.size {
+    if user_input.cursor > 0 { //&& user_input.cursor == user_input.size {
         user_input.cursor -= 1;
     }
     
@@ -226,6 +226,11 @@ fn word_backward(user_input: &mut User_Input) -> () {
     }
     while user_input.cursor > 0 && !specs.contains(&user_input.bytes[user_input.cursor]) {
         user_input.cursor -= 1;
+    }
+    if user_input.cursor < user_input.size && specs.contains(&user_input.bytes[user_input.cursor]) {
+        if !specs.contains(&user_input.bytes[user_input.cursor+1]) {
+            user_input.cursor += 1;
+        }
     }
 }
 
