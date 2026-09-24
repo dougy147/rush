@@ -7,11 +7,10 @@ use std::io;
 use std::io::prelude::*;
 use std::env;
 use std::cmp::min;
-use std::collections::HashMap;
+use std::collections::{BTreeMap,HashMap};
 
 use std::fs::OpenOptions;
 use std::os::fd::AsRawFd;
-
 use std::process::Command;
 
 type cc_t = c_uchar;
@@ -293,7 +292,7 @@ fn print_user_input(input: &mut User_Input) -> () {
     }
 }
 
-fn set_scores<'a>(content_cmds: &mut HashMap<(usize, &'a str),usize>, user_input: &mut [u8;MAX_LINE_LEN], _mode: &Mode) {
+fn set_scores<'a>(content_cmds: &mut BTreeMap<(usize, &'a str),usize>, user_input: &mut [u8;MAX_LINE_LEN], _mode: &Mode) {
     
     let content_count = content_cmds.len();
     
@@ -327,7 +326,7 @@ fn set_scores<'a>(content_cmds: &mut HashMap<(usize, &'a str),usize>, user_input
     }
 }
 
-fn display_lines<'a>(content_cmds: &'a HashMap<(usize, &'a str),usize>, min_score: usize, start_index: usize, highlight_cursor: usize, max_rows: usize, _rows: u16, cols: u16, mode: &Mode) -> (usize, &'a str) {
+fn display_lines<'a>(content_cmds: &'a BTreeMap<(usize, &'a str),usize>, min_score: usize, start_index: usize, highlight_cursor: usize, max_rows: usize, _rows: u16, cols: u16, _mode: &Mode) -> (usize, &'a str) {
 
     /* display cmds */
     let mut displayed: usize = 0;
@@ -338,14 +337,14 @@ fn display_lines<'a>(content_cmds: &'a HashMap<(usize, &'a str),usize>, min_scor
 
     // TODO: abstract this out of function and compute only when we need to rescore
 
-    let mut filtered:Vec<_>;
-    filtered = content_cmds.iter().filter(|((_,_),score)| **score >= min_score).collect();
-    
-    if *mode == Mode::HISTORY {
-        filtered.sort_by(|a, b| b.1.cmp(a.1)); // descending sort scores
-    } else {
-        filtered.sort_by(|a, b| a.1.cmp(b.1)); // asc sort scores
-    }
+    //let mut filtered:Vec<_>;
+    //filtered = content_cmds.iter().filter(|((_,_),score)| **score >= min_score).collect();
+    //
+    //if *mode == Mode::HISTORY {
+    //    filtered.sort_by(|a, b| b.1.cmp(a.1)); // descending sort scores
+    //} else {
+    //    filtered.sort_by(|a, b| a.1.cmp(b.1)); // asc sort scores
+    //}
 
     let mut index = 0;
 
@@ -355,11 +354,11 @@ fn display_lines<'a>(content_cmds: &'a HashMap<(usize, &'a str),usize>, min_scor
     let default_headblock = "\x1b[0;32;48;5;237m";
     let highlight_headblock = "\x1b[0;;42m";
 
-    for (key,score) in filtered {
+    for (key,_score) in content_cmds.iter().filter(|((_,_),s)| **s >= min_score) {
         
-        let (_, cmd) = key;
+        let (_, cmd) = *key;
 
-        if index < start_index || *score < min_score {
+        if index < start_index {
             index += 1;
             continue;
         }
@@ -482,27 +481,40 @@ fn main() -> std::io::Result<()> {
         //println!("<{}>", content);
     }
 
-    // HashMap:  line => (index, score)
-    //let mut content_map: HashMap<&str,(usize,usize)> = HashMap::new();
-    let mut content_map: HashMap<(usize, &str),usize> = HashMap::new();
+    // BTreeMap:  line => (index, score)
+    let mut content_map: BTreeMap<(usize, &str),usize> = BTreeMap::new();
     let mut visited: HashMap<&str,u8> = HashMap::new(); // this is used in STDIN mode
     
-    // populate content_cmds with scores = 0
-    let lines = content.trim_end().split("\n");
-    let mut index = 0;
-    for line in lines {
+    //let lines = content.trim_end().split("\n");
+    
+    if mode == Mode::HISTORY {
 
-        if mode == Mode::HISTORY {
-            if line.is_empty() { continue }
-            if visited.contains_key(line) { continue }
+        let count = content.trim_end().split("\n").count();
+
+        let mut index = 0;
+        for line in content.trim_end().split("\n") {
+
+            // if no duplicate do this
+            {
+                if line.is_empty() { continue }
+                if visited.contains_key(line) { continue }
+                visited.insert(line,0);
+            }
+
+            content_map.insert((count - index,line),count - index);
+            index += 1;
         }
-        
-        index += 1;
-        content_map.insert((index,line),0);
-        visited.insert(line,0);
-        //println!("inserting : <{}>", line);
+    } else {
 
+        let mut index = 0;
+        
+        for line in content.trim_end().split("\n") {
+            index += 1;
+            content_map.insert((index,line),index);
+        }
     }
+
+    
     
     // overwrite previous output if in COMPILE mode
     // TODO: but do this only if output was displayed in stdout
@@ -609,6 +621,8 @@ fn main() -> std::io::Result<()> {
                         print!("\x2B[2J\x1B[1;1H");
                         update_term_size(&mut rows, &mut cols);
                         MAX_ROWS = rows as usize - 1;
+                        line_highlight_cursor = 0;
+                        line_start_index = 0;
                         
                     } else if key == CTRL_u {
                         delete_from_cursor_to_bol(&mut user_input);
