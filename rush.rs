@@ -1,7 +1,6 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 
-use std::ffi::{c_int,c_uint,c_uchar,c_ulong,c_ushort};
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
@@ -13,71 +12,43 @@ use std::fs::OpenOptions;
 use std::os::fd::AsRawFd;
 use std::process::Command;
 
-type cc_t = c_uchar;
-type speed_t = c_uint;
-type tcflag_t = c_uint;
+use std::io::{BufRead, BufReader};
+use std::process::Stdio;
+use std::sync::mpsc::channel;
+use std::thread;
 
-const NCCS: usize = 32;
+use std::path::Path;
 
-#[derive(Debug,Default)] // Default allows 0-initialization, Debug for printing with {:?}
-#[repr(C)] // <-- without this modifying terminal attributes did not work out
-struct Termios {
-    c_iflag: tcflag_t,
-    c_oflag: tcflag_t,
-    c_cflag: tcflag_t,
-    c_lflag: tcflag_t,
-    c_line: cc_t,
-    c_cc: [cc_t; NCCS],
-    c_ispeed: speed_t,
-    c_ospeed: speed_t
+pub const MAX_SEARCH_LEN: usize = 512;
+
+// my own modules
+mod user_search;
+mod term;
+
+use user_search::*;
+use term::*;
+
+struct Location {
+    file_path: String,
+    row: u64,
+    col: u64,
 }
 
-struct winsize {
-	ws_row: c_ushort,
-	ws_col: c_ushort,
-	_ws_xpixel: c_ushort,
-	_ws_ypixel: c_ushort,
-}
-
-unsafe extern "C" {
-    fn tcgetattr(fd: c_int, termios_p: *mut Termios) -> c_int;
-    fn tcsetattr(fd: c_int, optional_actions: c_int, termios_p: *const Termios) -> c_int;
-    fn ioctl(fd: c_int, op: c_ulong, ...) -> c_int;
-}
-
-const MAX_LINE_LEN: usize = 512;
-
-struct User_Input {
-    bytes: [u8;MAX_LINE_LEN],
-    size: usize,
-    cursor: usize, // cursor position
-}
-
-/* streams */
-impl User_Input {
+impl Location {
     fn new() -> Self {
         Self {
-            bytes: [0;MAX_LINE_LEN],
-            size: 0,
-            cursor: 0,
-        }        
+            file_path: "".to_string(),
+            row: 0,
+            col: 0,
+        }
     }
 }
 
-const STDIN: c_int = 0;
-
-/* terminal attributes */
-const TCSAFLUSH: c_int = 2;
-
-/* terminal flags */
-const ECHO:   tcflag_t = 0b1000;
-const ICANON: tcflag_t = 0b100;
-
 /* key codes */
-const CTRL_c: u8 = 3;
-const ENTER: u8 = 10;
-const CARRIAGE: u8 = 13;
-const ESC: u8 = 27;
+const CTRL_c: u8    = 3;
+const ENTER: u8     = 10;
+const CARRIAGE: u8  = 13;
+const ESC: u8       = 27;
 const BACKSPACE: u8 = 127;
 
 /* user input cursor moves */
@@ -90,9 +61,6 @@ const CTRL_p: u8 = 16; // up row
 const CTRL_u: u8 = 21; // delete back from cursor to bol
 const CTRL_k: u8 = 11; // delete forward from cursor to eol
 const CTRL_l: u8 = 12; // take the whole screen
-
-/* windows size */
-const TIOCGWINSZ: c_ulong = 0x5413;
 
 //const prompt: &str = "\x1b[1;30mrush> \x1b[0m";
 const prompt_text: &str = " > ";
@@ -107,30 +75,6 @@ enum Mode {
     STDIN,
 }
 
-fn hide_cursor() -> () {
-    print!("\x1b[?25l");
-}
-
-fn show_cursor() -> () {
-    print!("\x1b[?25h");
-}
-
-fn save_terminal(fd: i32, terminal: &mut Termios) -> () {
-    unsafe { tcgetattr(fd, terminal); }
-}
-
-fn restore_terminal(fd: i32, terminal: &mut Termios) -> () {
-    unsafe { tcsetattr(fd, TCSAFLUSH, terminal); }
-    show_cursor();
-}
-
-fn set_terminal_raw_mode(fd: i32, terminal: &mut Termios) -> () {
-    terminal.c_lflag &= ICANON; // enable ICANON  raw mode
-    terminal.c_lflag &= ! ECHO ; // disable ECHO mode
-    unsafe { tcsetattr(fd, TCSAFLUSH, terminal); }
-    hide_cursor();
-}
-
 fn erase_current_output(rows: usize) -> () {
     if rows != 0 {
         print!("\x1B[{}K", rows); // erase matching cmd rows + user input
@@ -140,136 +84,7 @@ fn erase_current_output(rows: usize) -> () {
     print!("\x1B[0K\r");
 }
 
-fn delete_backward(user_input: &mut User_Input) {
-    // NOTE: we need to null terminate '\0'
-    if user_input.cursor > 0 {
-        for i in user_input.cursor..user_input.size {
-            user_input.bytes[i-1] = user_input.bytes[i];
-        }
-        user_input.size -= 1;
-        user_input.cursor -= 1;
-        user_input.bytes[user_input.size] = b'\0';
-    }
-}
-
-fn delete_from_cursor_to_bol(user_input: &mut User_Input) {
-    // NOTE: we need to null terminate '\0'
-
-    ////////////////////////////////////////
-    // tringsas|t|ring
-    // ^
-    if user_input.cursor > 0 {
-        for i in user_input.cursor..user_input.size {
-            user_input.bytes[i-user_input.cursor] = user_input.bytes[i];
-        }
-        user_input.size -= user_input.cursor;
-        user_input.cursor = 0;
-        for i in user_input.size..MAX_LINE_LEN {
-            user_input.bytes[i] = b'\0';
-        }
-    }
-}
-
-fn delete_from_cursor_to_eol(user_input: &mut User_Input) {
-    // NOTE: we need to null terminate '\0'
-    if user_input.cursor < user_input.size {
-        for i in user_input.cursor..user_input.size {
-            user_input.bytes[i] = b'\0';
-        }
-        user_input.size -= user_input.size - user_input.cursor;
-    }
-}
-
-fn insert_key(user_input: &mut User_Input, key: u8) {
-    if user_input.cursor != user_input.size {
-        // todo: assert no overflow
-        for i in (user_input.cursor..user_input.size).rev() {
-            user_input.bytes[i+1] = user_input.bytes[i];
-        }        
-    }
-    user_input.bytes[user_input.cursor] = key;
-    user_input.size += 1;
-    user_input.cursor += 1;
-    user_input.bytes[user_input.size] = b'\0';
-}
-
-fn cursor_forward(user_input: &mut User_Input) {
-    if user_input.cursor < user_input.size {
-        user_input.cursor += 1;
-    }
-}
-
-fn cursor_backward(user_input: &mut User_Input) {
-    if user_input.cursor > 0 {
-        user_input.cursor -= 1;
-    }
-}
-
-fn cursor_to_bol(user_input: &mut User_Input) {
-    user_input.cursor = 0;
-}
-
-fn cursor_to_eol(user_input: &mut User_Input) {
-    user_input.cursor = user_input.size;
-}
-
-fn word_forward(user_input: &mut User_Input) -> () {
-    // special chars to ignore: ' ', '"', '\''
-    let specs = [b' ', b'"', b'\''];
-    while user_input.cursor < user_input.size && specs.contains(&user_input.bytes[user_input.cursor]) {
-        user_input.cursor += 1;
-    }
-    while user_input.cursor < user_input.size && !specs.contains(&user_input.bytes[user_input.cursor]) {
-        user_input.cursor += 1;
-    }
-}
-
-fn word_backward(user_input: &mut User_Input) -> () {
-    // if cursor at end of string, force one backward
-    if user_input.cursor > 0 { //&& user_input.cursor == user_input.size {
-        user_input.cursor -= 1;
-    }
-    
-    // special chars to ignore: ' ', '"', '\''
-    let specs = [b' ', b'"', b'\''];
-    while user_input.cursor > 0 && specs.contains(&user_input.bytes[user_input.cursor]) {
-        user_input.cursor -= 1;
-    }
-    while user_input.cursor > 0 && !specs.contains(&user_input.bytes[user_input.cursor]) {
-        user_input.cursor -= 1;
-    }
-    if user_input.cursor < user_input.size && specs.contains(&user_input.bytes[user_input.cursor]) {
-        if !specs.contains(&user_input.bytes[user_input.cursor+1]) {
-            user_input.cursor += 1;
-        }
-    }
-}
-
-fn delete_word_backward(user_input: &mut User_Input) -> () {
-    // if cursor at end of string, force one backward
-    let specs = [b' ', b'"', b'\''];
-    
-    while user_input.size > 0 && user_input.cursor > 0 && specs.contains(&user_input.bytes[user_input.cursor-1])  {
-        for i in user_input.cursor-1..user_input.size-1 {
-            user_input.bytes[i] = user_input.bytes[i+1];
-        }
-        user_input.cursor -= 1;
-        user_input.size -= 1;
-        user_input.bytes[user_input.size] = b'\0';
-    }
-
-    // specs stopping going further back
-    while user_input.size > 0 && user_input.cursor > 0 && !specs.contains(&user_input.bytes[user_input.cursor-1]) {
-        for i in user_input.cursor-1..user_input.size-1 {
-            user_input.bytes[i] = user_input.bytes[i+1];
-        }
-        user_input.cursor -= 1;
-        user_input.size -= 1;
-        user_input.bytes[user_input.size] = b'\0';
-    }
-}
-
-fn print_user_input(input: &mut User_Input) -> () {
+fn print_user_search(search: &mut User_Search) -> () {
     
     ////////////////////////////////
     /* print a prompt if you want */
@@ -279,31 +94,31 @@ fn print_user_input(input: &mut User_Input) -> () {
 
     let cursor_color = 7; // white
     
-    for i in 0..input.size {
-        if i == input.cursor {
+    for i in 0..search.size {
+        if i == search.cursor {
             print!("\x1B[{}m", cursor_color);
         }
-        print!("{}",input.bytes[i] as char);
+        print!("{}",search.bytes[i] as char);
         print!("\x1B[0m");
     }
-    if input.cursor == input.size {
+    if search.cursor == search.size {
         // emulate block cursor with space lol
         print!("\x1B[{}m \x1B[0m", cursor_color);
     }
 }
 
-fn set_scores<'a>(content_cmds: &mut BTreeMap<(usize, &'a str),usize>, user_input: &mut [u8;MAX_LINE_LEN], _mode: &Mode) {
+fn compute_scores<'a>(content: &mut BTreeMap<(usize, &'a str),usize>, user_search: &mut [u8;MAX_SEARCH_LEN], _mode: &Mode) {
     
-    let content_count = content_cmds.len();
+    let content_count = content.len();
     
-    let search = str::from_utf8(user_input)
+    let search = str::from_utf8(user_search)
         .unwrap()
         .trim_end_matches('\0')
         .to_string();
 
     let terms = search.trim().split_whitespace();
     
-    'outer: for ((index,cmd),score) in content_cmds.iter_mut() {
+    'outer: for ((index,cmd),score) in content.iter_mut() {
         
         *score = 0;
 
@@ -326,119 +141,272 @@ fn set_scores<'a>(content_cmds: &mut BTreeMap<(usize, &'a str),usize>, user_inpu
     }
 }
 
-fn display_lines<'a>(content_cmds: &'a BTreeMap<(usize, &'a str),usize>, min_score: usize, start_index: usize, highlight_cursor: usize, max_rows: usize, _rows: u16, cols: u16, _mode: &Mode) -> (usize, &'a str) {
+fn get_location_from_line(line: &str) -> Option<Location> {
+    let mut loc: Location = Location::new();
+
+    if !line.contains(":") { return None }
+
+    for s in line.split_whitespace() {
+        if s.contains(":") {
+            let ss: Vec<&str> = s.split(":").collect();
+
+            for (i,t) in ss.iter().enumerate() {
+                let n0 = ss.get(i+1); // row?
+                let n1 = ss.get(i+2); // col?
+                if Path::new(t).is_file() {
+                    loc.file_path = t.to_string();
+                    if let Some(val0) = n0 {
+                        if let Ok(row) = val0.parse::<u64>() {
+                            loc.row = row;
+                        }
+                        if loc.row <= 0 { break }
+                        if let Some(val1) = n1 {
+                            if let Ok(col) = val1.parse::<u64>() {
+                                loc.col = col;
+                            }
+                        }
+                        return Some(loc)
+                    }
+                }
+            }
+        }
+    }
+    return None
+}
+
+fn display_lines<'a>(content: &'a BTreeMap<(usize, &'a str),usize>, min_score: usize, start_index: usize, highlight_cursor: usize, max_rows: usize, term: &Rush_Term, mode: &Mode) -> (usize, &'a str) {
 
     /* display cmds */
     let mut displayed: usize = 0;
     let mut selected: (usize, &'a str) = (0,""); // selected key from content_cmds
     
     let pad = prompt_text.len() + 10;
-    let c = cols as usize - pad;
-
-    // TODO: abstract this out of function and compute only when we need to rescore
-
-    //let mut filtered:Vec<_>;
-    //filtered = content_cmds.iter().filter(|((_,_),score)| **score >= min_score).collect();
-    //
-    //if *mode == Mode::HISTORY {
-    //    filtered.sort_by(|a, b| b.1.cmp(a.1)); // descending sort scores
-    //} else {
-    //    filtered.sort_by(|a, b| a.1.cmp(b.1)); // asc sort scores
-    //}
+    let c = term.width as usize - pad;
 
     let mut index = 0;
 
     // colors
-    let default_color = "\x1b[0;37;49m";
-    let highlight_color = "\x1b[1;37;48;5;237m";
-    let default_headblock = "\x1b[0;32;48;5;237m";
+    let default_color       = "\x1b[0;37;49m";
+    let highlight_color     = "\x1b[1;37;48;5;237m";
+    let default_headblock   = "\x1b[0;32;48;5;237m";
     let highlight_headblock = "\x1b[0;;42m";
 
-    for (key,_score) in content_cmds.iter().filter(|((_,_),s)| **s >= min_score) {
-        
-        let (_, cmd) = *key;
+    // for COMPILE colors
 
-        if index < start_index {
+    let default_err_color       = "\x1b[0;31;48;5;235m";
+    let highlight_err_color     = "\x1b[1;31;48;5;237m";
+    let default_err_headblock   = "\x1b[0;32;48;5;1m";
+    let highlight_err_headblock = "\x1b[0;;41m";
+
+    let default_empty_line_color       = "\x1b[0;30;48;5;235m";
+    let highlight_empty_line_color     = "\x1b[1;30;48;5;237m";
+    let default_empty_line_headblock   = "\x1b[1;32;48;5;241m";
+    let highlight_empty_line_headblock = "\x1b[1;32;48;5;241m";
+
+    if *mode == Mode::COMPILE {
+        // TODO: choose what to do here
+        // atm display red for errors and green
+        for (key,stream) in content.iter() {
+
+            if index < start_index {
+                index += 1;
+                continue;
+            }
+
+            let (_, line) = *key;
+
+            // grab location if any
+            let location = get_location_from_line(line);
+            match location {
+                Some(_loc) => {
+                    //println!("{}>>{}>>{}", loc.file_path, loc.row, loc.col);
+                },
+                None => {},
+            }
+
+            if displayed >= max_rows { break }
+
+            print!("\n{}", " ".repeat(prompt_text.len()));
+            
+            if displayed == highlight_cursor {
+
+                if line.is_empty() {
+                    print!("{} \x1b[0m{}", highlight_empty_line_headblock, highlight_empty_line_color);
+                } else if *stream == 2 {
+                    print!("{} \x1b[0m{}", highlight_err_headblock, highlight_err_color);
+                } else {
+                    print!("{} \x1b[0m{}", highlight_headblock, highlight_color);
+                }
+                selected = *key;
+                
+            } else {
+
+                if line.is_empty() {
+                    print!("{} \x1b[0m{}", default_empty_line_headblock, default_empty_line_color);
+                } else if *stream == 2 {
+                    print!("{} \x1b[0m{}", default_err_headblock, default_err_color);
+                } else {
+                    print!("{} \x1b[0m{}", default_headblock, default_color);
+                }
+                
+            }
+
+            print!(" {:c$}\x1b[0m",
+                   &line[..c.min(line.len())]
+                   .replace('\t',"    ")
+                   .replace('\n',"\\n")); // tabs and newline chars can mess with output
+            
+            displayed += 1;
             index += 1;
-            continue;
         }
-        
-        if displayed >= max_rows { break }
+    } else {
+        for (key,_score) in content.iter().filter(|((_,_),s)| **s >= min_score) {
+            
+            if index < start_index {
+                index += 1;
+                continue;
+            }
 
-        print!("\n{}", " ".repeat(prompt_text.len()));
-        if displayed == highlight_cursor {
-            print!("{} \x1b[0m{}", highlight_headblock, highlight_color);
-            selected = *key;
-        } else {
-            print!("{} \x1b[0m{}", default_headblock, default_color);
+            let (_, cmd) = *key;
+            
+            if displayed >= max_rows { break }
+
+            print!("\n{}", " ".repeat(prompt_text.len()));
+            if displayed == highlight_cursor {
+                print!("{} \x1b[0m{}", highlight_headblock, highlight_color);
+                selected = *key;
+            } else {
+                print!("{} \x1b[0m{}", default_headblock, default_color);
+            }
+            //print!("{:.c$}\x1b[0m", cmd);
+            print!(" {:c$}\x1b[0m",
+                   &cmd[..c.min(cmd.len())]
+                   .replace('\t',"    ")
+                   .replace('\n',"\\n")); // tabs and newline chars can mess with output  
+            displayed += 1;
+            index += 1;
         }
-        //print!("{:.c$}\x1b[0m", cmd);
-        print!(" {:c$}\x1b[0m", &cmd[..c.min(cmd.len())].replace('\t',"    ")); // tabs can mess with output  
-        displayed += 1;
-        index += 1;
     }
 
     return selected
 }
 
-fn update_term_size(rows: &mut u16, cols: &mut u16) {
-    //unsafe {
-    //    let w: winsize = std::mem::zeroed();
-    //    ioctl(STDIN,TIOCGWINSZ,&w);
-    //    //println!("w.ws_row = {:?} ; w.ws_col = {:?}", w.ws_row, w.ws_col);
-    //    *rows = w.ws_row as u16;
-    //    *cols = w.ws_col as u16;
-    //}
+fn cmd_capture_output<'a>(cmd_string: &String, content: &mut Vec<(String, usize)>) {
+    // TODO: cancel command with Ctrl + C if needed
 
-    // this will work in STDIN mode
-    let tty = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty").unwrap();
+    let mut cmd = Command::new("sh")
+        .arg("-c")
+        .arg(cmd_string)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
 
-    unsafe {
-        let w: winsize = std::mem::zeroed();
-        ioctl(tty.as_raw_fd(), TIOCGWINSZ, &w);
-        *rows = w.ws_row as u16;
-        *cols = w.ws_col as u16;
-    };
+    let (tx, rx) = channel();
+    
+    let stdout = cmd.stdout.take().unwrap();
+    let stderr = cmd.stderr.take().unwrap();
+
+    let tx_err = tx.clone();
+    thread::spawn(move || {
+        BufReader::new(stderr).lines().for_each(|line| {
+            let _ = tx_err.send((line.unwrap(), 2));
+        });
+    });
+
+    thread::spawn(move || {
+        BufReader::new(stdout).lines().for_each(|line| {
+            let _ = tx.send((line.unwrap(),1));
+        });
+    });
+
+    for (line, stream) in rx {
+        // stream = 0 if stdout
+        // stream = 2 if stderr
+        let boxed = Box::leak(line.into_boxed_str()); // this is necessary as long as lines are stored as &str instead of String
+        content.push((boxed.to_string(),stream));
+        //println!("{}: {}", stream, boxed);
+
+        // TODO: echo exactly as printed if not through rush
+        //println!("{}", boxed);
+    }
+
+    cmd.wait().unwrap();
+}
+
+fn open_in_editor(selected_line: (usize,&str), content_file_path: String, mode: &Mode) {
+    let editor_env_var = "EDITOR";
+    let editor = env::var(editor_env_var)
+        .map_err(|error| print!("{error}: Could not find environment variable \"{}\"", editor_env_var))
+        .unwrap();
+
+    let file_path: String;
+    let line_num;
+    
+    if *mode == Mode::COMPILE {
+        match get_location_from_line(selected_line.1) {
+            Some(loc) => {
+                file_path = loc.file_path;
+                line_num = loc.row;
+            },
+            None => return,
+        }
+    } else {
+        file_path = content_file_path;
+        line_num = selected_line.0 as u64;
+    }
+    //println!("{} {} +{}",editor, content_file_path, selected.0.to_string());
+    Command::new(editor)
+        .arg(file_path)
+        .arg(format!("+{}",line_num.to_string()))
+        .status()
+        .expect("`{editor}` should be executable");
+
+
 }
 
 #[allow(nonstandard_style)]
 fn main() -> std::io::Result<()> {
-    let mut MAX_ROWS: usize = 10;
+    let mut MAX_ROWS: usize = 15;
     assert!(MAX_ROWS > 1);
     
-    /* prepare terminal */
-    let mut rows: u16 = 0;
-    let mut cols: u16 = 0;
-    update_term_size(&mut rows,&mut cols);
-
     //println!("term:  cols = {}", cols);
 
-    let mut terminal_at_start: Termios = Default::default();
-    save_terminal(STDIN, &mut terminal_at_start);
+    let mut original_terminal = Rush_Term::new();
+    original_terminal.save();
+    //save_terminal(STDIN, &mut terminal_at_start);
     
-    let mut t: Termios = Default::default();
-    unsafe { tcgetattr(STDIN, &mut t) };
-    set_terminal_raw_mode(STDIN, &mut t);
-
+    let mut rush_terminal = Rush_Term::new();
+    rush_terminal.save();
+    rush_terminal.enable_raw_mode();
+    rush_terminal.update_term_size();
+    
     /* mode */
     let mut mode = Mode::NONE;
     let mut content_file_path = "".to_string();
-   
+    let mut cmd_string: String = String::from(""); // in case of COMPILE mode
+    
     /* grab arguments */
     let args: Vec<String> = env::args().collect();
 
+    
     for (i, arg) in args.iter().skip(1).enumerate() {
         let a: &str = arg;
         match a {
             "--history" | "-H" => mode = Mode::HISTORY,
-            "--file"    | "-f" => {
+            "--file"    | "-F" => {
                 mode = Mode::FILE;
                 content_file_path = args[i+1+1].clone();
             },
-            "--compile" | "-c" => mode = Mode::COMPILE,
+            "--compile" | "-C" => {
+                mode = Mode::COMPILE;
+                // now grab remaining as cmd single string and break
+                for elem in &args[i+1+1..] {
+                    cmd_string.push(' ');
+                    cmd_string.push_str(elem);
+                }
+                break;
+            },
             "--stdin"   | "-"  => mode = Mode::STDIN,
             _ => {},
         }
@@ -446,9 +414,13 @@ fn main() -> std::io::Result<()> {
 
     if mode == Mode::NONE {
         println!("{} requires a mode. TODO USAGE", args[0]);
-        restore_terminal(STDIN, &mut terminal_at_start);
+        original_terminal.restore();
         return Ok(());
     }
+
+    // BTreeMap:  line => (index, score)
+    let mut content_map: BTreeMap<(usize, &str),usize> = BTreeMap::new();
+    let mut visited: HashMap<&str,u8> = HashMap::new(); // this is used in STDIN mode
 
     let mut content_bytes = Vec::new();
     let mut content = String::new();
@@ -471,20 +443,15 @@ fn main() -> std::io::Result<()> {
             }, // go on peacefully
         }
         
-    } else if mode == Mode::STDIN || mode == Mode::COMPILE {
+    } else if mode == Mode::STDIN {
         match io::stdin().read_to_end(&mut content_bytes) {
             Err(e) => return Err(e),
             Ok(_)  => {
                 content = String::from_utf8_lossy(&content_bytes).to_string();
             },
         }
-        //println!("<{}>", content);
     }
 
-    // BTreeMap:  line => (index, score)
-    let mut content_map: BTreeMap<(usize, &str),usize> = BTreeMap::new();
-    let mut visited: HashMap<&str,u8> = HashMap::new(); // this is used in STDIN mode
-    
     //let lines = content.trim_end().split("\n");
     
     if mode == Mode::HISTORY {
@@ -504,6 +471,20 @@ fn main() -> std::io::Result<()> {
             content_map.insert((count - index,line),count - index);
             index += 1;
         }
+
+    } else if mode == Mode::COMPILE {
+
+        let mut output: Vec<(String,usize)> = Vec::new();
+        cmd_capture_output(&cmd_string, &mut output);
+        
+        let mut index = 0;
+        for (line,stream) in output {
+            index += 1;
+            let boxed = Box::leak(line.into_boxed_str()); // this is necessary as long as lines are stored as &str instead of String
+            content_map.insert((index,boxed),stream as usize);
+            //println!("{}{}", stream, boxed);
+        }
+        
     } else {
 
         let mut index = 0;
@@ -514,18 +495,16 @@ fn main() -> std::io::Result<()> {
         }
     }
 
-    
-    
     // overwrite previous output if in COMPILE mode
     // TODO: but do this only if output was displayed in stdout
-    //if mode == Mode::COMPILE {
-    //    erase_current_output(content_map.len());
-    //    io::stdout().flush().unwrap();
-    //}
+    if mode == Mode::COMPILE {
+        //erase_current_output(content_map.len());
+        //io::stdout().flush().unwrap();
+    }
 
-    /* prepare user input */
+    /* prepare user search input */
     let mut raw_key = [0u8;1];
-    let mut user_input = User_Input::new();
+    let mut user_search = User_Search::new();
 
     let mut escape_mode: bool = false;
 
@@ -533,39 +512,46 @@ fn main() -> std::io::Result<()> {
     let mut line_start_index: usize = 0;
     let mut line_highlight_cursor: usize = 0;
 
-    /* immediately print user prompt  and compute first iteration */
-    print_user_input(&mut user_input);
-    set_scores(&mut content_map, &mut user_input.bytes, &mode);
-    let mut selected = display_lines(&content_map,0, 0, 0, MAX_ROWS, rows, cols, &mode);
-    io::stdout().flush().unwrap();
-
     let mut command_was_selected: bool = false;
-    let mut available_lines = content_map.len();
-    let mut displayed_count: usize = min(MAX_ROWS,available_lines);
+    let mut showable_lines = content_map.len();
+    let mut displayed_count: usize = min(MAX_ROWS,showable_lines);
 
-    //println!("displayed_count = {}", displayed_count);
-    
     let mut rescore: bool; // sometimes there is no need to recompute scores
     
-    /* read user input from stdin in loop */
-    //let mut stdin = io::stdin().lock();
-
-    // do this for when we are in Mode::STDIN
-    // because we cannot reopen stdin ... 
+    /* read user search from stdin in loop */
+    
+    // do this when we are in Mode::STDIN because grabbing key press cannot
+    // be done on the same STDIN we already read from...
     // https://users.rust-lang.org/t/how-to-read-user-input-again-in-pipeline/50576
-    //let mut stdin = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
     let mut stdin = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
     let fd = stdin.as_raw_fd();
     
-    if mode == Mode::STDIN || mode == Mode::COMPILE {
-        save_terminal(fd, &mut terminal_at_start);
-        unsafe { tcgetattr(fd, &mut t) };
-        set_terminal_raw_mode(fd, &mut t)
+    if mode == Mode::STDIN {
+        original_terminal.fd = fd;
+        original_terminal.save();
+        rush_terminal.fd = fd;
+        rush_terminal.save();
+        rush_terminal.enable_raw_mode();
     }
+    
+    if content_map.len() == 0 {
+        // nothing to do
+        original_terminal.restore();
+        return Ok(());
+    }
+    
+    /* immediately print user prompt  and compute first iteration */
+    if mode != Mode::COMPILE {
+        print_user_search(&mut user_search);
+        compute_scores(&mut content_map, &mut user_search.bytes, &mode);
+    }
+    
+    let mut selected = display_lines(&content_map,0, 0, 0, MAX_ROWS, &rush_terminal, &mode);
+    io::stdout().flush().unwrap();    
     
     /* let's gooo */
     loop {
-        
+
         stdin.read_exact(&mut raw_key).unwrap();
         let key = raw_key[0];
         //print!("key = <{}> \n\n\n", key);
@@ -583,8 +569,8 @@ fn main() -> std::io::Result<()> {
                 //print!("key = <{}> \n", key);
                 //io::stdout().flush().unwrap();
                 
-                if user_input.bytes[0] == 0 {
-                    available_lines = content_map.len();
+                if user_search.bytes[0] == 0 {
+                    showable_lines = content_map.len();
                 }
                 
                 if key == CTRL_c {
@@ -594,44 +580,49 @@ fn main() -> std::io::Result<()> {
                 if !escape_mode {
                     
                     if key == ENTER || key == CARRIAGE {
-                        command_was_selected = true;
-                        break;
+
+                        if mode == Mode::COMPILE {
+                            open_in_editor(selected,content_file_path.clone(),&mode);
+                        } else {
+                            command_was_selected = true;
+                            break;
+                        }
                         
                     } else if key == CTRL_a {
-                        cursor_to_bol(&mut user_input);
+                        user_search.cursor_to_bol();
                         
                     } else if key == CTRL_e {
-                        cursor_to_eol(&mut user_input);
+                        user_search.cursor_to_eol();
 
                     } else if key == CTRL_f {
-                        cursor_forward(&mut user_input);
+                        user_search.cursor_forward();
                         rescore = false;
                         
                     } else if key == CTRL_b {
-                        cursor_backward(&mut user_input);
+                        user_search.cursor_backward();
                         rescore = false;
                         
                     } else if key == CTRL_k {
-                        delete_from_cursor_to_eol(&mut user_input);
+                        user_search.delete_from_cursor_to_eol();
                         line_highlight_cursor = 0;
                         line_start_index = 0;
                         rescore = true;
 
                     } else if key == CTRL_l {
-                        print!("\x2B[2J\x1B[1;1H");
-                        update_term_size(&mut rows, &mut cols);
-                        MAX_ROWS = rows as usize - 1;
+                        rush_terminal.clear();
+                        rush_terminal.update_term_size();
+                        MAX_ROWS = rush_terminal.height as usize - 1;
                         line_highlight_cursor = 0;
                         line_start_index = 0;
                         
                     } else if key == CTRL_u {
-                        delete_from_cursor_to_bol(&mut user_input);
+                        user_search.delete_from_cursor_to_bol();
                         line_highlight_cursor = 0;
                         line_start_index = 0;
                         rescore = true;
                         
                     } else if key == CTRL_n {
-                        if available_lines != 0 {
+                        if showable_lines != 0 {
 
                             line_highlight_cursor += 1;
                             
@@ -639,28 +630,28 @@ fn main() -> std::io::Result<()> {
                                 line_start_index += 1;
                             }
 
-                            if available_lines > MAX_ROWS && line_start_index + MAX_ROWS > available_lines {
+                            if showable_lines > MAX_ROWS && line_start_index + MAX_ROWS > showable_lines {
                                 line_start_index = 0;
                                 line_highlight_cursor = 0;
                             }
 
-                            if line_highlight_cursor >= available_lines {
+                            if line_highlight_cursor >= showable_lines {
                                 line_start_index = 0;
                                 line_highlight_cursor = 0;
                             }
 
                             line_highlight_cursor = if line_highlight_cursor >= MAX_ROWS { MAX_ROWS - 1 } else { line_highlight_cursor };
-                            line_highlight_cursor = if line_highlight_cursor >= available_lines { available_lines - 1 } else { line_highlight_cursor };
+                            line_highlight_cursor = if line_highlight_cursor >= showable_lines { showable_lines - 1 } else { line_highlight_cursor };
 
                         }
                         
                     } else if key == CTRL_p {
-                        if available_lines != 0 {
+                        if showable_lines != 0 {
                             
                             if line_highlight_cursor == 0 {
                                 if line_start_index == 0 {
-                                    line_highlight_cursor = if available_lines > MAX_ROWS {MAX_ROWS - 1} else {available_lines - 1};
-                                    line_start_index      = if available_lines > MAX_ROWS {available_lines - MAX_ROWS} else {0};
+                                    line_highlight_cursor = if showable_lines > MAX_ROWS {MAX_ROWS - 1} else {showable_lines - 1};
+                                    line_start_index      = if showable_lines > MAX_ROWS {showable_lines - MAX_ROWS} else {0};
                                 } else {
                                     line_start_index -= 1;
                                 }
@@ -671,19 +662,23 @@ fn main() -> std::io::Result<()> {
                         }
 
                     } else if key == BACKSPACE {
-                        delete_backward(&mut user_input);
+                        user_search.delete_backward();
                         /* and reset line_cursors */
                         line_highlight_cursor = 0;
                         line_start_index = 0;
                         rescore = true;
                         
                     } else {
-                        insert_key(&mut user_input, key);
 
+                        user_search.insert_key(key);
+
+                        /* if not a space rescore */
                         /* and reset line_cursors */
-                        line_highlight_cursor = 0;
-                        line_start_index = 0;
-                        rescore = true;
+                        if key != b' ' {
+                            rescore = true;
+                            line_highlight_cursor = 0;
+                            line_start_index = 0;
+                        }
                     }
                     
                 } else {
@@ -691,15 +686,15 @@ fn main() -> std::io::Result<()> {
                     escape_mode = false;
 
                     if key == b'b' {
-                        word_backward(&mut user_input);
+                        user_search.word_backward();
                         rescore = false;
                         
                     } else if key == b'f' {
-                        word_forward(&mut user_input);
+                        user_search.word_forward();
                         rescore = false;
                         
                     } else if key == BACKSPACE {
-                        delete_word_backward(&mut user_input);
+                        user_search.delete_word_backward();
                         /* and reset line_cursors */
                         line_highlight_cursor = 0;
                         line_start_index = 0;
@@ -709,20 +704,23 @@ fn main() -> std::io::Result<()> {
                 }
 
                 /* compute scores */
-                if rescore {
-                    set_scores(&mut content_map, &mut user_input.bytes, &mode);
-                    available_lines = content_map.values().filter(|score| **score > 0).count();
+                if rescore && mode != Mode::COMPILE {                    
+                    compute_scores(&mut content_map, &mut user_search.bytes, &mode);
+                    showable_lines = content_map.values().filter(|score| **score > 0).count();
                 }
 
                 /* screen display */
-                update_term_size(&mut rows,&mut cols);
+                rush_terminal.update_term_size();
                 erase_current_output(displayed_count);
-                print_user_input(&mut user_input);
+
+                if mode != Mode::COMPILE {
+                    print_user_search(&mut user_search);
+                }
                 
-                selected = display_lines(&content_map,1, line_start_index, line_highlight_cursor, MAX_ROWS, rows, cols, &mode);
+                selected = display_lines(&content_map,1, line_start_index, line_highlight_cursor, MAX_ROWS, &rush_terminal, &mode);
 
                 /* recompute displayed */
-                displayed_count = if available_lines > MAX_ROWS {MAX_ROWS} else {available_lines};// - line_start_index;
+                displayed_count = if showable_lines > MAX_ROWS {MAX_ROWS} else {showable_lines};// - line_start_index;
             },
 
         }
@@ -731,10 +729,11 @@ fn main() -> std::io::Result<()> {
     
     erase_current_output(displayed_count);
     
-    restore_terminal(fd, &mut terminal_at_start);
+    //restore_terminal(fd, &mut terminal_at_start);
+    original_terminal.restore();
 
     ////////////////////////////////////////////////////////////
-    // trying to print in input buffer the selected command
+    // trying to print in CLI input buffer the selected command
 
     print!("\r\x1B[1A\r");
     
@@ -742,17 +741,7 @@ fn main() -> std::io::Result<()> {
         if mode == Mode::HISTORY {
             print!("\n{}", if selected.1.len() > 0 { selected.1 } else {" "});
         } else if mode == Mode::FILE {
-            let editor_env_var = "EDITOR";
-            let editor = env::var(editor_env_var)
-                .map_err(|error| print!("{error}: Could not find environment variable \"{}\"", editor_env_var))
-                .unwrap();
-
-            //println!("{} {} +{}",editor, content_file_path, selected.0.to_string());
-            Command::new(editor)
-                .arg(content_file_path)
-                .arg(format!("+{}",selected.0.to_string()))
-                .status()
-                .expect("`{editor}` should be executable");
+            open_in_editor(selected,content_file_path,&mode);
         }
     } else {
         print!("\n ");

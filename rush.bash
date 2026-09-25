@@ -3,9 +3,9 @@
 _rush() { 
     local tmp=$(mktemp)
     if command -v rush >/dev/null; then 
-        rush | tee -pi $tmp
+        rush $1 | tee -pi $tmp
     else
-        ./rush | tee -pi $tmp # grab echoed last line from ./rush
+        ./rush $1 | tee -pi $tmp # grab echoed last line from ./rush
     fi
     echo -e "\r\e[1A\r"   # erase ./rush last line from terminal
     output="$(tail -n1 $tmp | sed 's/^ *$//')"
@@ -15,4 +15,4 @@ _rush() {
     fi
     rm $tmp
 }
-bind -x '"\C-r": _rush'
+bind -x '"\C-r": _rush -H'
