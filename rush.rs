@@ -93,28 +93,30 @@ fn print_user_search(search: &mut User_Search) -> () {
     ////////////////////////////////
 
     let cursor_color = 7; // white
-    
-    for i in 0..search.size {
+
+    let text = String::from_utf8_lossy(&search.bytes[..search.size]);
+
+    for (i,c) in text.chars().enumerate() {
         if i == search.cursor {
             print!("\x1B[{}m", cursor_color);
         }
-        print!("{}",search.bytes[i] as char);
+        print!("{}",c);
         print!("\x1B[0m");
     }
+    
     if search.cursor == search.size {
         // emulate block cursor with space lol
         print!("\x1B[{}m \x1B[0m", cursor_color);
     }
 }
 
-fn compute_scores<'a>(content: &mut BTreeMap<(usize, &'a str),usize>, user_search: &mut [u8;MAX_SEARCH_LEN], _mode: &Mode) {
+fn compute_scores<'a>(content: &mut BTreeMap<(usize, &'a str),usize>, user_search: &mut [u8;MAX_SEARCH_LEN], _mode: &Mode)  -> Result<(), Box<dyn std::error::Error>> {
     
     let content_count = content.len();
     
-    let search = str::from_utf8(user_search)
-        .unwrap()
+    let search = str::from_utf8(user_search)?
         .trim_end_matches('\0')
-        .to_string();
+        .to_owned();
 
     let terms = search.trim().split_whitespace();
     
@@ -139,6 +141,8 @@ fn compute_scores<'a>(content: &mut BTreeMap<(usize, &'a str),usize>, user_searc
             *score += *index;
         }
     }
+
+    Ok(())
 }
 
 fn get_location_from_line(line: &str) -> Option<Location> {
@@ -543,7 +547,7 @@ fn main() -> std::io::Result<()> {
     /* immediately print user prompt  and compute first iteration */
     if mode != Mode::COMPILE {
         print_user_search(&mut user_search);
-        compute_scores(&mut content_map, &mut user_search.bytes, &mode);
+        let _ = compute_scores(&mut content_map, &mut user_search.bytes, &mode);
     }
     
     let mut selected = display_lines(&content_map,0, 0, 0, MAX_ROWS, &rush_terminal, &mode);
@@ -555,7 +559,7 @@ fn main() -> std::io::Result<()> {
         stdin.read_exact(&mut raw_key).unwrap();
         let key = raw_key[0];
         //print!("key = <{}> \n\n\n", key);
-        
+
         rescore = false;
         
         match key {
@@ -569,7 +573,7 @@ fn main() -> std::io::Result<()> {
                 //print!("key = <{}> \n", key);
                 //io::stdout().flush().unwrap();
                 
-                if user_search.bytes[0] == 0 {
+                if user_search.size == 0 {
                     showable_lines = content_map.len();
                 }
                 
@@ -705,7 +709,7 @@ fn main() -> std::io::Result<()> {
 
                 /* compute scores */
                 if rescore && mode != Mode::COMPILE {                    
-                    compute_scores(&mut content_map, &mut user_search.bytes, &mode);
+                    let _ = compute_scores(&mut content_map, &mut user_search.bytes, &mode);
                     showable_lines = content_map.values().filter(|score| **score > 0).count();
                 }
 
