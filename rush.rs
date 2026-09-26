@@ -785,7 +785,7 @@ fn main() -> std::io::Result<()> {
                             let _ = compute_scores(&mut content_map, &mut user_search.bytes, &mode);
                             showable_lines = content_map.len();
                             
-                        } else if key != b' ' {
+                        } else if key != b' ' || user_search.cursor < user_search.size {
                             /* if not a space rescore */
                             /* and reset line_cursors */
                             rescore = true;
