@@ -8,7 +8,7 @@ use std::cmp::min;
 use std::path::Path;
 use std::io::{Read, Write};
 use std::fs::{File,OpenOptions};
-use std::process::{Command,Stdio};
+use std::process::{exit,Command,Stdio};
 use std::collections::{BTreeMap,HashMap};
 use std::os::fd::AsRawFd;
 use std::sync::mpsc::channel;
@@ -59,9 +59,30 @@ const CTRL_k: u8 = 11; // delete forward from cursor to eol
 const CTRL_l: u8 = 12; // take the whole screen
 const CTRL_r: u8 = 18; // equivalent to CTRL_c in HISTORY mode?
 
-fn parse_args(prog_name: &mut String, mode: &mut Mode, submode: &mut Submode, content_file_path: &mut String, cmd_string: &mut String) {
+fn usage(prog_name: &mut String, exit_code: i32) {
+    println!("USAGE: {} <MODE> [SUBMODE]", prog_name);
+    println!("OPTS:");
+    println!("    MODE:");
+    println!("      -H [FILE]     : browse shell history from $HISTFILE or FILE");
+    println!("      -F <FILE>     : browse FILE");
+    println!("      -X <COMMAND>  : browse COMMAND output");
+    println!("      -             : browse piped STDIN");
+    println!();
+    println!("    SUBMODE:");
+    println!("      -i : insert selection to terminal input");
+    println!("      -p : print selection to terminal");
+    println!("      -o : open selection with $EDITOR");
+    println!();
+    println!("    EXPERIMENTAL:");
+    println!("      -C <COMMAND>  : (experimental++) compilation mode");
+    exit(exit_code)
+}
+
+fn parse_args(prog_name: &mut String, mode: &mut Mode, submode: &mut Submode, content_file_path: &mut String, cmd_string: &mut String) -> i32 {
     let args: Vec<String> = env::args().collect();
     *prog_name = args[0].clone();
+
+    let mut exit_code = -1;
     
     for (i, arg) in args.iter().skip(1).enumerate() {
         let a: &str = arg;
@@ -104,9 +125,16 @@ fn parse_args(prog_name: &mut String, mode: &mut Mode, submode: &mut Submode, co
                         *submode = Submode::OPEN;
                     },
 
+                    /* help */
+                    'h' => {
+                        exit_code = 0;
+                        break;
+                    }
+
                     _ => {
-                        println!("Ignoring unknown flag: {}", c);
-                        // TODO: usage(1);
+                        println!("[!] Unknown flag: '-{}'", c);
+                        exit_code = 1;
+                        break;
                     }
                 }
             }
@@ -126,6 +154,8 @@ fn parse_args(prog_name: &mut String, mode: &mut Mode, submode: &mut Submode, co
             }
         }
     }
+
+    exit_code
 }
 
 #[allow(nonstandard_style)]
@@ -151,7 +181,12 @@ fn main() -> std::io::Result<()> {
     
     /* initialize arguments */
     let mut prog_name = Default::default();
-    parse_args(&mut prog_name, &mut mode, &mut submode, &mut content_file_path, &mut cmd_string);
+    let ok = parse_args(&mut prog_name, &mut mode, &mut submode, &mut content_file_path, &mut cmd_string);
+
+    if ok >= 0 {
+        original_terminal.restore();
+        usage(&mut prog_name, ok);
+    }
     
     if mode == Mode::NONE {
         println!("{} no mode provided. TODO USAGE", prog_name);
