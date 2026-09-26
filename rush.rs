@@ -1,27 +1,23 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 
-use std::fs::File;
 use std::io;
-use std::io::prelude::*;
 use std::env;
-use std::cmp::min;
-use std::collections::{BTreeMap,HashMap};
-
-use std::fs::OpenOptions;
-use std::os::fd::AsRawFd;
-use std::process::Command;
-
-use std::io::{BufRead, BufReader};
-use std::process::Stdio;
-use std::sync::mpsc::channel;
 use std::thread;
 
+use std::cmp::min;
 use std::path::Path;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::fs::{File,OpenOptions};
+use std::process::{Command,Stdio};
+use std::collections::{BTreeMap,HashMap};
+
+use std::os::fd::AsRawFd;
+use std::sync::mpsc::channel;
 
 pub const MAX_SEARCH_LEN: usize = 512;
 
-// my own modules
+// our modules
 mod user_search;
 mod term;
 
@@ -63,8 +59,24 @@ const CTRL_k: u8 = 11; // delete forward from cursor to eol
 const CTRL_l: u8 = 12; // take the whole screen
 const CTRL_r: u8 = 18; // equivalent to CTRL_c in HISTORY mode?
 
-//const prompt: &str = "\x1b[1;30mrush> \x1b[0m";
 const prompt_text: &str = " > ";
+
+/* Colors */
+const default_color       : &str = "\x1b[0;37;49m";
+const highlight_color     : &str = "\x1b[1;37;48;5;237m";
+const default_headblock   : &str = "\x1b[0;32;48;5;237m";
+const highlight_headblock : &str = "\x1b[0;;42m";
+
+// for COMPILE colors
+const default_err_color       : &str = "\x1b[0;31;48;5;235m";
+const highlight_err_color     : &str = "\x1b[1;31;48;5;237m";
+const default_err_headblock   : &str = "\x1b[0;32;48;5;1m";
+const highlight_err_headblock : &str = "\x1b[0;;41m";
+
+const default_empty_line_color       : &str = "\x1b[0;30;48;5;235m";
+const highlight_empty_line_color     : &str = "\x1b[1;30;48;5;237m";
+const default_empty_line_headblock   : &str = "\x1b[1;32;48;5;241m";
+const highlight_empty_line_headblock : &str = "\x1b[1;32;48;5;241m";
 
 /* modes and submodes */
 #[derive(PartialEq)]
@@ -190,6 +202,8 @@ fn get_location_from_line(line: &str) -> Option<Location> {
 
 fn display_lines_compile<'a>(content: &'a BTreeMap<(usize, &'a str),usize>, start_index: usize, highlight_cursor: &mut usize, max_rows: usize, term: &Rush_Term) -> (usize, &'a str) {
 
+    //assert!(*mode == Mode::COMPILE);
+    
     /* display cmds */
     let mut displayed: usize = 0;
     let mut selected: (usize, &'a str) = (0,""); // selected key from content_cmds
@@ -198,25 +212,6 @@ fn display_lines_compile<'a>(content: &'a BTreeMap<(usize, &'a str),usize>, star
     let c = term.width as usize - pad;
 
     let mut index = 0;
-
-    // colors
-    let default_color       = "\x1b[0;37;49m";
-    let highlight_color     = "\x1b[1;37;48;5;237m";
-    let default_headblock   = "\x1b[0;32;48;5;237m";
-    let highlight_headblock = "\x1b[0;;42m";
-
-    // for COMPILE colors
-
-    let default_err_color       = "\x1b[0;31;48;5;235m";
-    let highlight_err_color     = "\x1b[1;31;48;5;237m";
-    let default_err_headblock   = "\x1b[0;32;48;5;1m";
-    let highlight_err_headblock = "\x1b[0;;41m";
-
-    let default_empty_line_color       = "\x1b[0;30;48;5;235m";
-    let highlight_empty_line_color     = "\x1b[1;30;48;5;237m";
-    let default_empty_line_headblock   = "\x1b[1;32;48;5;241m";
-    let highlight_empty_line_headblock = "\x1b[1;32;48;5;241m";
-
 
     for (key,stream) in content.iter() {
 
@@ -276,7 +271,9 @@ fn display_lines_compile<'a>(content: &'a BTreeMap<(usize, &'a str),usize>, star
 }
     
 fn display_lines<'a>(content: &'a BTreeMap<(usize, &'a str),usize>, min_score: usize, start_index: usize, highlight_cursor: usize, max_rows: usize, term: &Rush_Term, mode: &Mode) -> (usize, &'a str) {
-
+    
+    assert!(*mode != Mode::COMPILE);
+    
     /* display cmds */
     let mut displayed: usize = 0;
     let mut selected: (usize, &'a str) = (0,""); // selected key from content_cmds
@@ -286,48 +283,38 @@ fn display_lines<'a>(content: &'a BTreeMap<(usize, &'a str),usize>, min_score: u
 
     let mut index = 0;
 
-    // colors
-    let default_color       = "\x1b[0;37;49m";
-    let highlight_color     = "\x1b[1;37;48;5;237m";
-    let default_headblock   = "\x1b[0;32;48;5;237m";
-    let highlight_headblock = "\x1b[0;;42m";
-
-    if *mode == Mode::COMPILE {
-        unreachable!();
-    } else {
-        for (key,_score) in content.iter().filter(|((_,_),s)| **s >= min_score) {
-            
-            if index < start_index {
-                index += 1;
-                continue;
-            }
-
-            let (_, cmd) = *key;
-            
-            if displayed >= max_rows { break }
-
-            print!("\n{}", " ".repeat(prompt_text.len()));
-            if displayed == highlight_cursor {
-                print!("{} \x1b[0m{}", highlight_headblock, highlight_color);
-                selected = *key;
-            } else {
-                print!("{} \x1b[0m{}", default_headblock, default_color);
-            }
-            //print!("{:.c$}\x1b[0m", cmd);
-            print!(" {:c$}\x1b[0m",
-                   &cmd[..c.min(cmd.len())]
-                   .replace('\t',"    ")
-                   .replace('\n',"\\n")); // tabs and newline chars can mess with output  
-            displayed += 1;
+    for (key,_score) in content.iter().filter(|((_,_),s)| **s >= min_score) {
+        
+        if index < start_index {
             index += 1;
+            continue;
         }
+
+        let (_, cmd) = *key;
+        
+        if displayed >= max_rows { break }
+
+        print!("\n{}", " ".repeat(prompt_text.len()));
+        if displayed == highlight_cursor {
+            print!("{} \x1b[0m{}", highlight_headblock, highlight_color);
+            selected = *key;
+        } else {
+            print!("{} \x1b[0m{}", default_headblock, default_color);
+        }
+        //print!("{:.c$}\x1b[0m", cmd);
+        print!(" {:c$}\x1b[0m",
+               &cmd[..c.min(cmd.len())]
+               .replace('\t',"    ")
+               .replace('\n',"\\n")); // tabs and newline chars can mess with output  
+        displayed += 1;
+        index += 1;
     }
 
     return selected
 }
 
 fn cmd_capture_output<'a>(cmd_string: &String, content: &mut Vec<(String, usize)>) {
-    // TODO: cancel command with Ctrl + C if needed
+    // TODO: Ctrl+c should stop capturing!!!
 
     let mut cmd = Command::new("sh")
         .arg("-c")
@@ -361,9 +348,6 @@ fn cmd_capture_output<'a>(cmd_string: &String, content: &mut Vec<(String, usize)
         let boxed = Box::leak(line.into_boxed_str()); // this is necessary as long as lines are stored as &str instead of String
         content.push((boxed.to_string(),stream));
         //println!("{}: {}", stream, boxed);
-
-        // TODO: echo exactly as printed if not through rush
-        //println!("{}", boxed);
     }
 
     cmd.wait().unwrap();
@@ -378,7 +362,7 @@ fn open_in_editor(selected_line: (usize,&str), content_file_path: String, mode: 
     let file_path: String;
     let line_num;
     
-    if *mode == Mode::COMPILE {
+    if *mode == Mode::COMPILE || *mode == Mode::COMMAND {
         match get_location_from_line(selected_line.1) {
             Some(loc) => {
                 file_path = loc.file_path;
@@ -390,14 +374,74 @@ fn open_in_editor(selected_line: (usize,&str), content_file_path: String, mode: 
         file_path = content_file_path;
         line_num = selected_line.0 as u64;
     }
-    //println!("{} {} +{}",editor, content_file_path, selected.0.to_string());
+
+    // WARNING: only works with vim!!
+    // TODO: make this compatible with other EDITORs
     Command::new(editor)
         .arg(file_path)
-        .arg(format!("+{}",line_num.to_string()))
+        .arg(format!("+{}",line_num))
         .status()
         .expect("`{editor}` should be executable");
+}
 
+fn parse_args(prog_name: &mut String, mode: &mut Mode, submode: &mut Submode, content_file_path: &mut String, cmd_string: &mut String) {
+    let args: Vec<String> = env::args().collect();
+    *prog_name = args[0].clone();
+    
+    for (i, arg) in args.iter().skip(1).enumerate() {
+        let a: &str = arg;
+        // TODO: parse flags to allow `rush -Fi` instead of `-F -i`
+        
+        match a {
+            /* modeps */
+            "--history" | "-H" => {
+                *mode = Mode::HISTORY;
+                if *submode == Submode::NONE { *submode = Submode::INSERT }
+            },
+            "--file"    | "-F" => {
+                *mode = Mode::FILE;
+                if *submode == Submode::NONE { *submode = Submode::OPEN }
+            },
+            "--command" | "-X" => {
+                *mode = Mode::COMMAND;
+                if *submode == Submode::NONE { *submode = Submode::PRINT }
+            },
+            "--compile" | "-C" => {
+                *mode = Mode::COMPILE;
+                *submode = Submode::OPEN;
+            },
+            "--stdin"   | "-"  => {
+                *mode = Mode::STDIN;
+            }
+            
+            /* submodes */
+            "--insert" | "-i" => {
+                // TODO: this needs a wrapper script to work
+                //       (not implemented yet except for HISTORY mode)
+                *submode = Submode::INSERT;
+            },
+            "--print" | "-p" => {
+                *submode = Submode::PRINT;
+            },
+            "--open" | "-o" => {
+                *submode = Submode::OPEN;
+            },
 
+            /* remaining */
+            _ => {
+                if *mode == Mode::FILE || *mode == Mode::HISTORY {
+                    *content_file_path = a.to_string();
+                } else if *mode == Mode::COMMAND || *mode == Mode::COMPILE {
+                    // grab remaining as cmd single string and break
+                    for elem in &args[i+1..] {
+                        cmd_string.push(' ');
+                        cmd_string.push_str(elem);
+                    }
+                    break;
+                }
+            },
+        }
+    }
 }
 
 #[allow(nonstandard_style)]
@@ -419,84 +463,28 @@ fn main() -> std::io::Result<()> {
     /* mode */
     let mut mode = Mode::NONE;
     let mut submode = Submode::NONE;
-    let mut content_file_path = "".to_string();
-    let mut cmd_string: String = String::from(""); // in case of COMPILE mode
+    let mut content_file_path = Default::default();
+    let mut cmd_string = Default::default(); // in case of COMPILE mode
     
     /* grab arguments */
-    let args: Vec<String> = env::args().collect();
-    let prog_name = &args[0];
+    // mode, submode, content_file_path, cmd_string
+    let mut prog_name = Default::default();
+    parse_args(&mut prog_name, &mut mode, &mut submode, &mut content_file_path, &mut cmd_string);
     
-    for (i, arg) in args.iter().skip(1).enumerate() {
-        let a: &str = arg;
-        // TODO: parse flags to allow `rush -Fi` instead of `-F -i`
-        
-        match a {
-            /* modeps */
-            "--history" | "-H" => {
-                mode = Mode::HISTORY;
-                if submode == Submode::NONE { submode = Submode::INSERT }
-            },
-            "--file"    | "-F" => {
-                mode = Mode::FILE;
-                if submode == Submode::NONE { submode = Submode::OPEN }
-            },
-            "--command" | "-X" => {
-                mode = Mode::COMMAND;
-                if submode == Submode::NONE { submode = Submode::PRINT }
-             },
-            "--compile" | "-C" => {
-                mode = Mode::COMPILE;
-                submode = Submode::OPEN;
-            },
-            "--stdin"   | "-"  => {
-                mode = Mode::STDIN;
-            }
-            
-            /* submodes */
-            "--insert" | "-i" => {
-                // TODO: this needs a wrapper script to work
-                //       (not implemented yet except for HISTORY mode)
-                submode = Submode::INSERT;
-            },
-            "--print" | "-p" => {
-                submode = Submode::PRINT;
-            },
-            "--open" | "-o" => {
-                submode = Submode::OPEN;
-            },
-
-            /* remaining */
-            _ => {
-                if mode == Mode::FILE || mode == Mode::HISTORY {
-                    content_file_path = a.to_string();
-                } else if mode == Mode::COMMAND || mode == Mode::COMPILE {
-                    // grab remaining as cmd single string and break
-                    for elem in &args[i+1..] {
-                        cmd_string.push(' ');
-                        cmd_string.push_str(elem);
-                    }
-                    break;
-                }
-            },
-        }
-    }
-
     if mode == Mode::NONE {
         println!("{} requires a mode. TODO USAGE", prog_name);
         original_terminal.restore();
         return Ok(());
     }
 
-    if submode == Submode::NONE {
-        unreachable!();
-    }
+    assert!(submode != Submode::NONE);
 
     // BTreeMap:  line => (index, score)
     let mut content_map: BTreeMap<(usize, &str),usize> = BTreeMap::new();
     let mut visited: HashMap<&str,u8> = HashMap::new(); // this is used in STDIN mode
 
     let mut content_bytes = Vec::new();
-    let mut content = String::new();
+    let content;
 
     /* HISTORY and FILE modes both read files */
     if mode == Mode::HISTORY || mode == Mode::FILE {
@@ -551,9 +539,17 @@ fn main() -> std::io::Result<()> {
             }
         }
 
+        if mode == Mode::FILE {
+            let mut index = 0;
+            for line in content.trim_end().split("\n") {
+                index += 1;
+                content_map.insert((index,line),index);
+            }
+        }
         
     } else if mode == Mode::COMPILE || mode == Mode::COMMAND {
-
+        // TODO: Ctrl+c should stop capturing!!!
+        
         let mut output: Vec<(String,usize)> = Vec::new();
         cmd_capture_output(&cmd_string, &mut output);
         
@@ -573,17 +569,13 @@ fn main() -> std::io::Result<()> {
                 content = String::from_utf8_lossy(&content_bytes).to_string();
             },
         }
-    }
-
-
-    if mode == Mode::FILE || mode == Mode::STDIN {
 
         let mut index = 0;
-        
         for line in content.trim_end().split("\n") {
             index += 1;
             content_map.insert((index,line),index);
         }
+
     }
 
     // overwrite previous output if in COMPILE mode
