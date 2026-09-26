@@ -71,6 +71,15 @@ impl Rush_Term {
         }
     }
 
+    pub fn erase_up(&self, rows: usize) {
+        if rows != 0 {
+            print!("\x1B[{}K", rows); // erase matching cmd rows + user input
+            print!("\x1B[{}A\x1B[0J", rows); // move cursor up and clean up lines
+        }
+        print!("\x1B[{}G", 0); // cursor to bol
+        print!("\x1B[0K\r");
+    }
+
     pub fn clear(&self) {
         print!("\x2B[2J\x1B[1;1H");
     }

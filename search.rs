@@ -1,5 +1,6 @@
 use MAX_SEARCH_LEN;
-    
+use PROMPT_TEXT;
+
 pub struct User_Search {
     pub bytes: [u8;MAX_SEARCH_LEN],
     pub size: usize,
@@ -138,6 +139,25 @@ impl User_Search {
             self.cursor -= 1;
             self.size -= 1;
             self.bytes[self.size] = b'\0';
+        }
+    }
+    
+    pub fn print(&self) {
+
+        print!("\x1b[1;32;48;5;237m{}\x1b[0m",PROMPT_TEXT);
+
+        let cursor_color = 7; // white
+
+        let user_search_as_string = String::from_utf8_lossy(&self.bytes[..self.size]);
+
+        for (i,c) in user_search_as_string.chars().enumerate() {
+            if i == self.cursor { print!("\x1B[{}m", cursor_color) }
+            print!("{}\x1B[0m",c);
+        }
+        
+        if self.cursor == self.size {
+            // emulate block cursor with space lol
+            print!("\x1B[{}m \x1B[0m", cursor_color);
         }
     }
 }
