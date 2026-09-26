@@ -66,14 +66,23 @@ const CTRL_r: u8 = 18; // equivalent to CTRL_c in HISTORY mode?
 //const prompt: &str = "\x1b[1;30mrush> \x1b[0m";
 const prompt_text: &str = " > ";
 
-/* modes */
+/* modes and submodes */
 #[derive(PartialEq)]
 enum Mode {
     NONE,
-    HISTORY, // ALT_1  => default mode
-    FILE,    // ALT_2 => display file in rush (same as HISTORY but reversed display)
-    COMPILE, // ALT_3  => execute a command from input and show result in rush
-    STDIN,
+    HISTORY, // ALT_1  => default mode?
+    FILE,    // ALT_2  => display file in rush (same as HISTORY but reversed display)
+    COMMAND, // ALT_3  => execute a command and navigate through output
+    COMPILE, // ALT_4  => same as above but no user_search filtering (no prompt)
+    STDIN,   // when piping something to rush
+}
+
+#[derive(PartialEq)]
+enum Submode {
+    NONE,
+    INSERT, // insert selection in command line input (default in HISTORY mode)
+    PRINT,  // echo selection to STDOUT
+    OPEN,   // open line in EDITOR
 }
 
 fn erase_current_output(rows: usize) -> () {
@@ -393,9 +402,6 @@ fn open_in_editor(selected_line: (usize,&str), content_file_path: String, mode: 
 
 #[allow(nonstandard_style)]
 fn main() -> std::io::Result<()> {
-    let mut MAX_ROWS: usize = 20;
-    assert!(MAX_ROWS > 1);
-    
     //println!("term:  cols = {}", cols);
 
     let mut original_terminal = Rush_Term::new();
@@ -407,41 +413,82 @@ fn main() -> std::io::Result<()> {
     rush_terminal.enable_raw_mode();
     rush_terminal.update_term_size();
     
+    let mut MAX_ROWS: usize = min(20,rush_terminal.height as usize - 1);
+    assert!(MAX_ROWS > 1);
+    
     /* mode */
     let mut mode = Mode::NONE;
+    let mut submode = Submode::NONE;
     let mut content_file_path = "".to_string();
     let mut cmd_string: String = String::from(""); // in case of COMPILE mode
     
     /* grab arguments */
     let args: Vec<String> = env::args().collect();
-
+    let prog_name = &args[0];
     
     for (i, arg) in args.iter().skip(1).enumerate() {
         let a: &str = arg;
+        // TODO: parse flags to allow `rush -Fi` instead of `-F -i`
+        
         match a {
-            "--history" | "-H" => mode = Mode::HISTORY,
+            /* modeps */
+            "--history" | "-H" => {
+                mode = Mode::HISTORY;
+                if submode == Submode::NONE { submode = Submode::INSERT }
+            },
             "--file"    | "-F" => {
                 mode = Mode::FILE;
-                content_file_path = args[i+1+1].clone();
+                if submode == Submode::NONE { submode = Submode::OPEN }
             },
+            "--command" | "-X" => {
+                mode = Mode::COMMAND;
+                if submode == Submode::NONE { submode = Submode::PRINT }
+             },
             "--compile" | "-C" => {
                 mode = Mode::COMPILE;
-                // now grab remaining as cmd single string and break
-                for elem in &args[i+1+1..] {
-                    cmd_string.push(' ');
-                    cmd_string.push_str(elem);
-                }
-                break;
+                submode = Submode::OPEN;
             },
-            "--stdin"   | "-"  => mode = Mode::STDIN,
-            _ => {},
+            "--stdin"   | "-"  => {
+                mode = Mode::STDIN;
+            }
+            
+            /* submodes */
+            "--insert" | "-i" => {
+                // TODO: this needs a wrapper script to work
+                //       (not implemented yet except for HISTORY mode)
+                submode = Submode::INSERT;
+            },
+            "--print" | "-p" => {
+                submode = Submode::PRINT;
+            },
+            "--open" | "-o" => {
+                submode = Submode::OPEN;
+            },
+
+            /* remaining */
+            _ => {
+                if mode == Mode::FILE || mode == Mode::HISTORY {
+                    content_file_path = a.to_string();
+                } else if mode == Mode::COMMAND || mode == Mode::COMPILE {
+                    // grab remaining as cmd single string and break
+                    for elem in &args[i+1..] {
+                        cmd_string.push(' ');
+                        cmd_string.push_str(elem);
+                    }
+                    break;
+                }
+            },
         }
     }
 
     if mode == Mode::NONE {
-        println!("{} requires a mode. TODO USAGE", args[0]);
+        println!("{} requires a mode. TODO USAGE", prog_name);
         original_terminal.restore();
         return Ok(());
+    }
+
+    if submode == Submode::NONE {
+        unreachable!();
     }
 
     // BTreeMap:  line => (index, score)
@@ -450,55 +497,62 @@ fn main() -> std::io::Result<()> {
 
     let mut content_bytes = Vec::new();
     let mut content = String::new();
-    
+
+    /* HISTORY and FILE modes both read files */
     if mode == Mode::HISTORY || mode == Mode::FILE {
 
-        if mode == Mode::HISTORY {
-            
+        // HISTORY : If not file was provided, try reading $HISTFILE environment var
+        if mode == Mode::HISTORY && content_file_path.is_empty() {
             let content_env_var = "HISTFILE";
-            content_file_path = env::var(content_env_var)
-                .map_err(|error| print!("{error}: Could not find environment variable \"{}\"", content_env_var))
-                .unwrap();
+            content_file_path = match env::var(content_env_var) {
+                Err(e) => {
+                    print!("{e}: \"{}\"", content_env_var);
+                    original_terminal.restore();
+                    return Ok(())
+                },
+                Ok(content) => content,
+            };
         }
        
-        let mut file: File = File::open(content_file_path.clone())?;
-        match file.read_to_end(&mut content_bytes) {
-            Err(e) => return Err(e), // could not read content
-            Ok(_) => {
-                content = String::from_utf8_lossy(&content_bytes).to_string();
-            }, // go on peacefully
-        }
-        
-    } else if mode == Mode::STDIN {
-        match io::stdin().read_to_end(&mut content_bytes) {
-            Err(e) => return Err(e),
-            Ok(_)  => {
-                content = String::from_utf8_lossy(&content_bytes).to_string();
-            },
-        }
-    }
-
-    //let lines = content.trim_end().split("\n");
-    
-    if mode == Mode::HISTORY {
-
-        let count = content.trim_end().split("\n").count();
-
-        let mut index = 0;
-        for line in content.trim_end().split("\n") {
-
-            // if no duplicate do this
-            {
-                if line.is_empty() { continue }
-                if visited.contains_key(line) { continue }
-                visited.insert(line,0);
+        match File::open(content_file_path.clone()) {
+            Err(e) => {
+                original_terminal.restore();
+                return Err(e)
             }
+            Ok(mut file)  => {
+                match file.read_to_end(&mut content_bytes) {
+                    Err(e) => {
+                        original_terminal.restore();
+                        return Err(e) // could not read content
+                    },
+                    Ok(_) => {
+                        content = String::from_utf8_lossy(&content_bytes).to_string();
+                    }, // go on peacefully
+                }
+            },
+        };
 
-            content_map.insert((count - index,line),count - index);
-            index += 1;
+        if mode == Mode::HISTORY {
+
+            let count = content.trim_end().split("\n").count();
+
+            let mut index = 0;
+            for line in content.trim_end().split("\n") {
+
+                // if no duplicate do this
+                {
+                    if line.is_empty() { continue }
+                    if visited.contains_key(line) { continue }
+                    visited.insert(line,0);
+                }
+
+                content_map.insert((count - index,line),count - index);
+                index += 1;
+            }
         }
 
-    } else if mode == Mode::COMPILE {
+        
+    } else if mode == Mode::COMPILE || mode == Mode::COMMAND {
 
         let mut output: Vec<(String,usize)> = Vec::new();
         cmd_capture_output(&cmd_string, &mut output);
@@ -511,7 +565,18 @@ fn main() -> std::io::Result<()> {
             //println!("{}{}", stream, boxed);
         }
         
-    } else {
+    /* STDIN mode */
+    } else if mode == Mode::STDIN {
+        match io::stdin().read_to_end(&mut content_bytes) {
+            Err(e) => return Err(e),
+            Ok(_)  => {
+                content = String::from_utf8_lossy(&content_bytes).to_string();
+            },
+        }
+    }
+
+
+    if mode == Mode::FILE || mode == Mode::STDIN {
 
         let mut index = 0;
         
@@ -616,8 +681,9 @@ fn main() -> std::io::Result<()> {
                     
                     if key == ENTER || key == CARRIAGE {
 
-                        if mode == Mode::COMPILE || mode == Mode::FILE {
+                        if submode == Submode::OPEN {
                             open_in_editor(selected,content_file_path.clone(),&mode);
+                            rush_terminal.hide_cursor();
                         } else {
                             command_was_selected = true;
                             break;
@@ -775,8 +841,6 @@ fn main() -> std::io::Result<()> {
                     selected = display_lines_compile(&content_map,line_start_index, &mut line_highlight_cursor, MAX_ROWS, &rush_terminal);
                 }
                 
-
-
                 /* recompute displayed */
                 displayed_count = if showable_lines > MAX_ROWS {MAX_ROWS} else {showable_lines};// - line_start_index;
             },
@@ -786,20 +850,20 @@ fn main() -> std::io::Result<()> {
     }
     
     erase_current_output(displayed_count);
-    
-    //restore_terminal(fd, &mut terminal_at_start);
     original_terminal.restore();
 
     ////////////////////////////////////////////////////////////
     // trying to print in CLI input buffer the selected command
 
-    print!("\r\x1B[1A\r");
+    print!("\r\x1B[1A\r"); // clean current line
     
     if command_was_selected {
-        if mode == Mode::HISTORY {
+        if submode == Submode::INSERT {
             print!("\n{}", if selected.1.len() > 0 { selected.1 } else {" "});
-        } else if mode == Mode::FILE {
-            open_in_editor(selected,content_file_path,&mode);
+        } else if submode == Submode::PRINT {
+            print!("\n{}", if selected.1.len() > 0 { selected.1 } else {" "});
+        } else if submode == Submode::OPEN {
+            open_in_editor(selected,content_file_path,&mode);            
         }
     } else {
         print!("\n ");

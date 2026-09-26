@@ -75,7 +75,7 @@ impl Rush_Term {
         print!("\x2B[2J\x1B[1;1H");
     }
 
-    fn hide_cursor(&self) {
+    pub fn hide_cursor(&self) {
         print!("\x1b[?25l");
     }
 
