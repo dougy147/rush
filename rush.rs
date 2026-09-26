@@ -45,10 +45,10 @@ impl Location {
 }
 
 /* key codes */
-const CTRL_c: u8    = 3;
-const ENTER: u8     = 10;
-const CARRIAGE: u8  = 13;
-const ESC: u8       = 27;
+const CTRL_c: u8 = 3;
+const ENTER: u8 = 10;
+const CARRIAGE: u8 = 13;
+const ESC: u8 = 27;
 const BACKSPACE: u8 = 127;
 
 /* user input cursor moves */
@@ -61,6 +61,7 @@ const CTRL_p: u8 = 16; // up row
 const CTRL_u: u8 = 21; // delete back from cursor to bol
 const CTRL_k: u8 = 11; // delete forward from cursor to eol
 const CTRL_l: u8 = 12; // take the whole screen
+const CTRL_r: u8 = 18; // equivalent to CTRL_c in HISTORY mode?
 
 //const prompt: &str = "\x1b[1;30mrush> \x1b[0m";
 const prompt_text: &str = " > ";
@@ -178,7 +179,7 @@ fn get_location_from_line(line: &str) -> Option<Location> {
     return None
 }
 
-fn display_lines<'a>(content: &'a BTreeMap<(usize, &'a str),usize>, min_score: usize, start_index: usize, highlight_cursor: usize, max_rows: usize, term: &Rush_Term, mode: &Mode) -> (usize, &'a str) {
+fn display_lines_compile<'a>(content: &'a BTreeMap<(usize, &'a str),usize>, start_index: usize, highlight_cursor: &mut usize, max_rows: usize, term: &Rush_Term) -> (usize, &'a str) {
 
     /* display cmds */
     let mut displayed: usize = 0;
@@ -207,62 +208,83 @@ fn display_lines<'a>(content: &'a BTreeMap<(usize, &'a str),usize>, min_score: u
     let default_empty_line_headblock   = "\x1b[1;32;48;5;241m";
     let highlight_empty_line_headblock = "\x1b[1;32;48;5;241m";
 
-    if *mode == Mode::COMPILE {
-        // TODO: choose what to do here
-        // atm display red for errors and green
-        for (key,stream) in content.iter() {
 
-            if index < start_index {
-                index += 1;
-                continue;
-            }
+    for (key,stream) in content.iter() {
 
-            let (_, line) = *key;
-
-            // grab location if any
-            let location = get_location_from_line(line);
-            match location {
-                Some(_loc) => {
-                    //println!("{}>>{}>>{}", loc.file_path, loc.row, loc.col);
-                },
-                None => {},
-            }
-
-            if displayed >= max_rows { break }
-
-            print!("\n{}", " ".repeat(prompt_text.len()));
-            
-            if displayed == highlight_cursor {
-
-                if line.is_empty() {
-                    print!("{} \x1b[0m{}", highlight_empty_line_headblock, highlight_empty_line_color);
-                } else if *stream == 2 {
-                    print!("{} \x1b[0m{}", highlight_err_headblock, highlight_err_color);
-                } else {
-                    print!("{} \x1b[0m{}", highlight_headblock, highlight_color);
-                }
-                selected = *key;
-                
-            } else {
-
-                if line.is_empty() {
-                    print!("{} \x1b[0m{}", default_empty_line_headblock, default_empty_line_color);
-                } else if *stream == 2 {
-                    print!("{} \x1b[0m{}", default_err_headblock, default_err_color);
-                } else {
-                    print!("{} \x1b[0m{}", default_headblock, default_color);
-                }
-                
-            }
-
-            print!(" {:c$}\x1b[0m",
-                   &line[..c.min(line.len())]
-                   .replace('\t',"    ")
-                   .replace('\n',"\\n")); // tabs and newline chars can mess with output
-            
-            displayed += 1;
+        if index < start_index {
             index += 1;
+            continue;
         }
+
+        let (_, line) = *key;
+
+        // grab location if any
+        let location = get_location_from_line(line);
+        match location {
+            Some(_loc) => {
+                //println!("{}>>{}>>{}", loc.file_path, loc.row, loc.col);
+            },
+            None => {},
+        }
+
+        if displayed >= max_rows { break }
+
+        print!("\n{}", " ".repeat(prompt_text.len()));
+        
+        if displayed == *highlight_cursor as usize {
+
+            if line.is_empty() {
+                print!("{} \x1b[0m{}", highlight_empty_line_headblock, highlight_empty_line_color);
+            } else if *stream == 2 {
+                print!("{} \x1b[0m{}", highlight_err_headblock, highlight_err_color);
+            } else {
+                print!("{} \x1b[0m{}", highlight_headblock, highlight_color);
+            }
+            selected = *key;
+            
+        } else {
+
+            if line.is_empty() {
+                print!("{} \x1b[0m{}", default_empty_line_headblock, default_empty_line_color);
+            } else if *stream == 2 {
+                print!("{} \x1b[0m{}", default_err_headblock, default_err_color);
+            } else {
+                print!("{} \x1b[0m{}", default_headblock, default_color);
+            }
+            
+        }
+
+        print!(" {:c$}\x1b[0m",
+               &line[..c.min(line.len())]
+               .replace('\t',"    ")
+               .replace('\n',"\\n")); // tabs and newline chars can mess with output
+        
+        displayed += 1;
+        index += 1;
+    }
+
+    return selected
+}
+    
+fn display_lines<'a>(content: &'a BTreeMap<(usize, &'a str),usize>, min_score: usize, start_index: usize, highlight_cursor: usize, max_rows: usize, term: &Rush_Term, mode: &Mode) -> (usize, &'a str) {
+
+    /* display cmds */
+    let mut displayed: usize = 0;
+    let mut selected: (usize, &'a str) = (0,""); // selected key from content_cmds
+    
+    let pad = prompt_text.len() + 10;
+    let c = term.width as usize - pad;
+
+    let mut index = 0;
+
+    // colors
+    let default_color       = "\x1b[0;37;49m";
+    let highlight_color     = "\x1b[1;37;48;5;237m";
+    let default_headblock   = "\x1b[0;32;48;5;237m";
+    let highlight_headblock = "\x1b[0;;42m";
+
+    if *mode == Mode::COMPILE {
+        unreachable!();
     } else {
         for (key,_score) in content.iter().filter(|((_,_),s)| **s >= min_score) {
             
@@ -371,7 +393,7 @@ fn open_in_editor(selected_line: (usize,&str), content_file_path: String, mode: 
 
 #[allow(nonstandard_style)]
 fn main() -> std::io::Result<()> {
-    let mut MAX_ROWS: usize = 15;
+    let mut MAX_ROWS: usize = 20;
     assert!(MAX_ROWS > 1);
     
     //println!("term:  cols = {}", cols);
@@ -549,8 +571,13 @@ fn main() -> std::io::Result<()> {
         print_user_search(&mut user_search);
         let _ = compute_scores(&mut content_map, &mut user_search.bytes, &mode);
     }
-    
-    let mut selected = display_lines(&content_map,0, 0, 0, MAX_ROWS, &rush_terminal, &mode);
+
+    let mut selected;
+    if mode != Mode::COMPILE {
+        selected = display_lines(&content_map,0, 0, 0, MAX_ROWS, &rush_terminal, &mode);
+    } else {
+        selected = display_lines_compile(&content_map,line_start_index, &mut line_highlight_cursor, MAX_ROWS, &rush_terminal);
+    }
     io::stdout().flush().unwrap();    
     
     /* let's gooo */
@@ -580,12 +607,16 @@ fn main() -> std::io::Result<()> {
                 if key == CTRL_c {
                     break;
                 }
+
+                if key == CTRL_r && mode == Mode::HISTORY {
+                    break;
+                }
                 
                 if !escape_mode {
                     
                     if key == ENTER || key == CARRIAGE {
 
-                        if mode == Mode::COMPILE {
+                        if mode == Mode::COMPILE || mode == Mode::FILE {
                             open_in_editor(selected,content_file_path.clone(),&mode);
                         } else {
                             command_was_selected = true;
@@ -676,9 +707,29 @@ fn main() -> std::io::Result<()> {
 
                         user_search.insert_key(key);
 
-                        /* if not a space rescore */
-                        /* and reset line_cursors */
-                        if key != b' ' {
+                        if key == b'g' && mode == Mode::COMPILE {
+                            /* poor emulation of emacs compilation mode */
+                            let mut output: Vec<(String,usize)> = Vec::new();
+                            cmd_capture_output(&cmd_string, &mut output);
+
+                            content_map.clear();
+
+                            let mut index = 0;
+                            for (line,stream) in output {
+                                index += 1;
+                                let boxed = Box::leak(line.into_boxed_str());
+                                content_map.insert((index,boxed),stream as usize);
+                            }
+                            //cmd_capture_output(&cmd_string, &mut content_map);
+                            line_highlight_cursor = 0;
+                            line_start_index = 0;
+
+                            let _ = compute_scores(&mut content_map, &mut user_search.bytes, &mode);
+                            showable_lines = content_map.len();
+                            
+                        } else if key != b' ' {
+                            /* if not a space rescore */
+                            /* and reset line_cursors */
                             rescore = true;
                             line_highlight_cursor = 0;
                             line_start_index = 0;
@@ -719,9 +770,12 @@ fn main() -> std::io::Result<()> {
 
                 if mode != Mode::COMPILE {
                     print_user_search(&mut user_search);
+                    selected = display_lines(&content_map,1, line_start_index, line_highlight_cursor, MAX_ROWS, &rush_terminal, &mode);
+                } else {
+                    selected = display_lines_compile(&content_map,line_start_index, &mut line_highlight_cursor, MAX_ROWS, &rush_terminal);
                 }
                 
-                selected = display_lines(&content_map,1, line_start_index, line_highlight_cursor, MAX_ROWS, &rush_terminal, &mode);
+
 
                 /* recompute displayed */
                 displayed_count = if showable_lines > MAX_ROWS {MAX_ROWS} else {showable_lines};// - line_start_index;
